@@ -23,7 +23,7 @@ const PlaylistCardComponent: React.FC<PlaylistCardProps> = ({ playlist, classNam
     <Link
       to={`/playlist/${playlist.id}`}
       onMouseEnter={handleMouseEnter}
-      className={`group relative rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.05] hover:border-white/[0.12] p-2.5 sm:p-3 transition-colors duration-150 active:scale-[0.98] block select-none ${className}`}
+      className={`group relative rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.05] hover:border-white/[0.12] p-2.5 sm:p-3 anim-card block select-none ${className}`}
     >
       <div className="relative aspect-square w-full rounded-lg overflow-hidden mb-2 bg-white/5 flex items-center justify-center shadow-sm">
         {playlist.coverUrl ? (

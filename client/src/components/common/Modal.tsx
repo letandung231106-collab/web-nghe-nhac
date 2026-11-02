@@ -57,7 +57,7 @@ export const Modal: React.FC<ModalProps> = ({
             initial={{ opacity: 0, y: 30, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 30, scale: 0.98 }}
-            transition={{ duration: 0.25, ease: 'easeOut' }}
+            transition={{ type: 'spring', stiffness: 380, damping: 32, mass: 0.8 }}
             className={`relative w-full ${maxStyles[maxWidth]} rounded-t-3xl md:rounded-2xl bg-background-elevated border-t md:border border-white/10 p-5 md:p-6 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] md:pb-6 shadow-2xl z-10 max-h-[90vh] flex flex-col`}
           >
             {/* Mobile Drag Indicator */}

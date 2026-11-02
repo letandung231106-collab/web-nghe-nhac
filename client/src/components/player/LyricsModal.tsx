@@ -18,9 +18,11 @@ const MAX_LINE_SECONDS = 6;
 const BREAK_SECONDS = 5;
 
 // The store's currentTime only ticks ~4 times per second; interpolate between ticks so the
-// karaoke fill sweeps smoothly instead of jumping.
-const useSmoothTime = () => {
-  const [time, setTime] = useState(() => usePlayerStore.getState().currentTime);
+// karaoke fill sweeps smoothly instead of jumping. Runs every frame without re-rendering:
+// the caller writes to the DOM directly and only sets state when something visible changes.
+const useSmoothClock = (onFrame: (time: number) => void) => {
+  const onFrameRef = useRef(onFrame);
+  onFrameRef.current = onFrame;
   useEffect(() => {
     let frame = 0;
     let base = usePlayerStore.getState().currentTime;
@@ -34,7 +36,7 @@ const useSmoothTime = () => {
     const tick = () => {
       const { isPlaying, isBuffering, playbackRate } = usePlayerStore.getState();
       const elapsed = isPlaying && !isBuffering ? Math.min(1, (performance.now() - baseAt) / 1000) : 0;
-      setTime(base + elapsed * (playbackRate || 1));
+      onFrameRef.current(base + elapsed * (playbackRate || 1));
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -43,7 +45,6 @@ const useSmoothTime = () => {
       unsubscribe();
     };
   }, []);
-  return time;
 };
 
 const KaraokeBody: React.FC = () => {
@@ -52,7 +53,7 @@ const KaraokeBody: React.FC = () => {
   const duration = usePlayerStore((s) => s.duration);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
   const seek = usePlayerStore((s) => s.seek);
-  const smoothTime = useSmoothTime();
+  const currentTime = usePlayerStore((s) => s.currentTime);
 
   // Songs played from lists don't carry lyrics; fetch the detail record when needed.
   const { data: detail, isLoading } = useQuery({
@@ -90,30 +91,45 @@ const KaraokeBody: React.FC = () => {
     setSyncMode(false);
     setOffsetNote('');
   }, [currentSong.id]);
-  const time = smoothTime + offset;
-
   const lines = useMemo(() => parseSyncedLyrics(lyrics?.syncedLyrics), [lyrics?.syncedLyrics]);
-
-  let activeIndex = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (time >= lines[i].time) {
-      activeIndex = i;
-      break;
-    }
-  }
   const lineEnd = (i: number) => Math.min(lines[i + 1]?.time ?? Infinity, lines[i].time + MAX_LINE_SECONDS);
-  const nextTime = lines[activeIndex + 1]?.time ?? (activeIndex === -1 ? lines[0]?.time : undefined);
-  const inBreak =
-    lines.length > 0 &&
-    nextTime !== undefined &&
-    (activeIndex === -1 || time >= lineEnd(activeIndex)) &&
-    nextTime - (activeIndex === -1 ? 0 : lineEnd(activeIndex)) >= BREAK_SECONDS;
-  const breakStart = activeIndex === -1 ? 0 : lineEnd(activeIndex);
-  const breakProgress = inBreak && nextTime !== undefined ? (time - breakStart) / (nextTime - breakStart) : 0;
+
+  // Only the line index, break state and dot count re-render; the fill sweep is written straight to the DOM.
+  const [{ activeIndex, inBreak, breakDots }, setView] = useState({ activeIndex: -1, inBreak: false, breakDots: 0 });
+  const smoothTimeRef = useRef(usePlayerStore.getState().currentTime);
+  const fillRef = useRef<HTMLDivElement | null>(null);
+  useSmoothClock((smoothTime) => {
+    smoothTimeRef.current = smoothTime;
+    const time = smoothTime + offset;
+    let index = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (time >= lines[i].time) {
+        index = i;
+        break;
+      }
+    }
+    const nextTime = lines[index + 1]?.time ?? (index === -1 ? lines[0]?.time : undefined);
+    const breakStart = index === -1 ? 0 : lineEnd(index);
+    const isBreak =
+      lines.length > 0 &&
+      nextTime !== undefined &&
+      (index === -1 || time >= breakStart) &&
+      nextTime - breakStart >= BREAK_SECONDS;
+    const dots = isBreak && nextTime !== undefined ? Math.min(3, Math.ceil(((time - breakStart) / (nextTime - breakStart)) * 3)) : 0;
+    setView((v) =>
+      v.activeIndex === index && v.inBreak === isBreak && v.breakDots === dots
+        ? v
+        : { activeIndex: index, inBreak: isBreak, breakDots: dots }
+    );
+    if (index >= 0 && !isBreak && fillRef.current) {
+      const progress = Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
+      fillRef.current.style.setProperty('--p', `${(progress * 100).toFixed(2)}%`);
+    }
+  });
 
   // Auto-scroll keeps the active line centred, but yields to the user for a few seconds after they scroll.
   const containerRef = useRef<HTMLDivElement>(null);
-  const activeLineRef = useRef<HTMLDivElement>(null);
+  const activeLineRef = useRef<HTMLDivElement | null>(null);
   const userScrollUntil = useRef(0);
   useEffect(() => {
     if (Date.now() < userScrollUntil.current) return;
@@ -125,7 +141,7 @@ const KaraokeBody: React.FC = () => {
 
   const onLineClick = (lineTime: number) => {
     if (syncMode) {
-      setOffset(Math.round((lineTime - smoothTime) * 4) / 4);
+      setOffset(Math.round((lineTime - smoothTimeRef.current) * 4) / 4);
       setSyncMode(false);
       setOffsetNote('');
     } else {
@@ -194,9 +210,6 @@ const KaraokeBody: React.FC = () => {
             {lines.map((line, idx) => {
               const isActive = idx === activeIndex && !inBreak;
               const isPassed = idx < activeIndex || (idx === activeIndex && inBreak);
-              const progress = isActive
-                ? Math.min(1, Math.max(0, (time - line.time) / Math.max(0.5, lineEnd(idx) - line.time)))
-                : isPassed ? 1 : 0;
               return (
                 <React.Fragment key={idx}>
                   {inBreak && idx === activeIndex + 1 && (
@@ -205,26 +218,34 @@ const KaraokeBody: React.FC = () => {
                         <span
                           key={d}
                           className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-white transition-opacity duration-300 animate-pulse"
-                          style={{ opacity: breakProgress > d / 3 ? 1 : 0.2 }}
+                          style={{ opacity: breakDots > d ? 1 : 0.2 }}
                         />
                       ))}
                     </div>
                   )}
                   <div
-                    ref={isActive ? activeLineRef : null}
+                    ref={
+                      isActive
+                        ? (el) => {
+                            activeLineRef.current = el;
+                            fillRef.current = el;
+                          }
+                        : null
+                    }
                     onClick={() => onLineClick(line.time)}
-                    className={`cursor-pointer origin-left font-extrabold leading-snug tracking-tight transition-all duration-300 text-2xl md:text-4xl ${
+                    className={`cursor-pointer origin-left font-extrabold leading-snug tracking-tight transition-[opacity,transform] duration-300 ease-out will-change-transform text-2xl md:text-4xl ${
                       syncMode ? 'hover:outline hover:outline-2 hover:outline-amber-300/70 rounded-lg ' : ''
                     }${
-                      isActive ? 'scale-100 blur-0' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 blur-[1px] hover:opacity-80 hover:blur-0'
+                      isActive ? 'scale-100' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 hover:opacity-80'
                     }`}
                     style={{
-                      backgroundImage: `linear-gradient(90deg, #ffffff ${progress * 100}%, rgba(255,255,255,0.35) ${progress * 100}%)`,
+                      // Active line: --p is driven per frame by useSmoothClock.
+                      ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
+                      backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
                       WebkitBackgroundClip: 'text',
                       backgroundClip: 'text',
                       color: 'transparent',
-                      textShadow: isActive ? '0 0 24px rgba(255,255,255,0.25)' : undefined,
-                    }}
+                    } as React.CSSProperties}
                   >
                     {line.text}
                   </div>
@@ -242,13 +263,13 @@ const KaraokeBody: React.FC = () => {
       {/* Bottom transport: play/pause, scrubber, sync offset */}
       <div className="relative z-10 flex-shrink-0 px-6 pt-3 pb-[calc(env(safe-area-inset-bottom)+1rem)] max-w-3xl w-full mx-auto space-y-3">
         <div className="flex items-center gap-3 text-[11px] font-mono text-text-muted">
-          <span className="w-10 text-right">{formatDuration(Math.floor(smoothTime))}</span>
+          <span className="w-10 text-right">{formatDuration(Math.floor(currentTime))}</span>
           <input
             type="range"
             min={0}
             max={duration || 1}
             step={0.5}
-            value={Math.min(smoothTime, duration || 1)}
+            value={Math.min(currentTime, duration || 1)}
             onChange={(e) => seek(parseFloat(e.target.value))}
             aria-label="Tua bài hát"
             className="flex-1 h-1 accent-white cursor-pointer"
@@ -335,14 +356,13 @@ export const LyricsModal: React.FC = () => {
       transition={{ type: 'spring', damping: 30, stiffness: 300 }}
       className="fixed inset-0 z-[60] bg-[#07080c] flex flex-col overflow-hidden"
     >
-      {/* Living background: the cover art, heavily blurred and slowly drifting */}
+      {/* Background: the cover art, heavily blurred. Kept static: animating a 90px blur
+          over the whole screen re-filters every frame and starves the lyrics animation. */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <motion.img
+        <img
           src={currentSong.coverUrl}
           alt=""
           className="absolute w-[160%] h-[160%] -left-[30%] -top-[30%] object-cover blur-[90px] opacity-60 saturate-150"
-          animate={{ rotate: [0, 8, -6, 0], scale: [1, 1.08, 1.03, 1] }}
-          transition={{ duration: 40, repeat: Infinity, ease: 'easeInOut' }}
         />
         <div className="absolute inset-0 bg-black/45" />
       </div>

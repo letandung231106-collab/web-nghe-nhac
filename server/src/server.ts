@@ -10,6 +10,7 @@ import routes from './routes/index.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
 import { globalApiRateLimiter } from './middleware/apiRateLimiter.js';
+import { cloudflareRealIp } from './middleware/cloudflare.js';
 import { SecurityLogger } from './utils/securityLogger.js';
 import { appCache } from './utils/cacheManager.js';
 import { playbackBuffer } from './services/playbackBuffer.js';
@@ -21,6 +22,9 @@ const app = express();
 
 // 1. Trust Reverse Proxy (For secure rate limiting & IP extraction behind Vercel/Nginx/Cloudflare)
 app.set('trust proxy', 1);
+
+// 1b. Resolve real visitor IP when proxied through Cloudflare (CF-Connecting-IP)
+app.use(cloudflareRealIp);
 
 // 2. High-Efficiency HTTP Compression (Gzip/Deflate)
 app.use(

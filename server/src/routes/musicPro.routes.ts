@@ -21,6 +21,10 @@ const presentOrder = (order: any) => ({
   qrUrl: `https://vietqr.app/img?${new URLSearchParams({ acc: account(), bank: bank(), amount: String(order.amount), des: order.code, template: 'compact' })}`,
 });
 
+// Listening together is free: members of an open Jam room skip the ad and the daily limit.
+const inJam = async (userId: string) => !!await prisma.jamRoom.findFirst({
+  where: { endedAt: null, OR: [{ hostId: userId }, { members: { some: { userId } } }] }, select: { id: true } });
+
 router.use((_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
 router.get('/status', requireAuth, wrap(async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.userId } });
@@ -103,7 +107,7 @@ router.post('/playback/:songId/prepare', requireAuth, wrap(async (req, res) => {
   const userId = req.user!.userId;
   if (!await prisma.song.findUnique({ where: { id: req.params.songId }, select: { id: true } })) return sendError(res, 'Bài hát không tồn tại.', 404);
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  const pro = isPro(user.proExpiresAt);
+  const pro = isPro(user.proExpiresAt) || await inJam(userId);
   const usage = await prisma.dailyUsage.findUnique({ where: { userId_day: { userId, day: vietnamDay() } } });
   if (!pro && (usage?.count || 0) >= FREE_LIMIT) return sendError(res, 'Bạn đã nghe đủ 3 lượt hôm nay. Nâng cấp Music Pro để nghe không giới hạn.', 403);
   const seconds = pro ? 0 : AD_SECONDS;
@@ -123,7 +127,7 @@ router.post('/playback/:sessionId/start', requireAuth, wrap(async (req, res) => 
     const song = await tx.song.findUnique({ where: { id: session.songId } });
     if (!song) return null;
     if (!session.consumedAt) {
-      if (!isPro(user.proExpiresAt, now)) {
+      if (!isPro(user.proExpiresAt, now) && !(!session.adRequired && await inJam(userId))) {
         if (!session.adRequired) return null; // Pro expired after preparation: request a new ad-backed session.
         const key = { userId, day: vietnamDay(now) };
         const usage = await tx.dailyUsage.upsert({ where: { userId_day: key }, create: key, update: {} });

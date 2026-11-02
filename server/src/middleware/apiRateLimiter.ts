@@ -55,11 +55,9 @@ export class SlidingWindowRateLimiter {
 
   public getMiddleware(customErrorMessage?: string) {
     return (req: Request, res: Response, next: NextFunction) => {
-      // Determine client IP safely
-      const forwardedFor = req.headers['x-forwarded-for'];
-      const rawIp = typeof forwardedFor === 'string'
-        ? forwardedFor.split(',')[0].trim()
-        : req.ip || req.socket.remoteAddress || 'unknown';
+      // Determine client IP safely (req.ip honours trust proxy + Cloudflare CF-Connecting-IP;
+      // the first X-Forwarded-For entry is client-controlled and must not be trusted)
+      const rawIp = req.ip || req.socket.remoteAddress || 'unknown';
 
       // Combine IP with User ID if authenticated for dual-layer enforcement
       const userKey = (req as any).user?.userId

@@ -6,9 +6,11 @@ import { BottomPlayer } from '../player/BottomPlayer.js';
 import { MobileNav } from './MobileNav.js';
 import { JamSync } from '../jam/JamSync.js';
 import { usePlayerStore } from '../../store/playerStore.js';
+import { usePageTransition } from '../../utils/usePageTransition.js';
 
 export const MainLayout: React.FC = () => {
   const hasCurrentSong = usePlayerStore((state) => Boolean(state.currentSong));
+  const pageRef = usePageTransition<HTMLDivElement>();
 
   return (
     <div className="flex h-screen bg-background text-text-primary overflow-hidden w-full max-w-full">
@@ -28,7 +30,9 @@ export const MainLayout: React.FC = () => {
               : 'pb-[calc(56px+env(safe-area-inset-bottom)+1rem)] md:pb-8'
           }`}
         >
-          <Outlet />
+          <div ref={pageRef}>
+            <Outlet />
+          </div>
         </main>
       </div>
 
