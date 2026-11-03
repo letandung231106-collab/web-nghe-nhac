@@ -10,7 +10,7 @@ import {
   AlertCircle,
   Plus,
   UserPlus,
-  Search,
+  Sparkles,
 } from 'lucide-react';
 import { Song, Artist, Album, Genre } from '../../types/index.js';
 import { adminService, uploadToStorage } from '../../services/admin.service.js';
@@ -355,6 +355,9 @@ export const SongModal: React.FC<SongModalProps> = ({
       } else if (meta?.title) {
         setMetaFeedback(`Tự động nhận diện: "${meta.title}"`);
       }
+
+      // New song from YouTube: generate synced lyrics right away instead of asking for them.
+      if (!song && !syncedLyrics.trim()) handleAiLyrics({ titleOverride: meta?.title || title, ytOverride: url });
     } catch (e) {
       console.warn('Could not auto-fetch YouTube metadata:', e);
     } finally {
@@ -392,20 +395,45 @@ export const SongModal: React.FC<SongModalProps> = ({
     }
   };
 
-  const handleFindLyrics = async () => {
+  const hasAudioSource =
+    (sourceType === 'youtube' && !!getYoutubeId(youtubeUrl)) ||
+    (sourceType === 'upload' && (!!audioFile || !!audioUrl)) ||
+    (sourceType === 'url' && /^https?:\/\//i.test(audioUrl.trim()));
+
+  // AI listens to the actual audio, so every line is timed to this recording and the player can follow it live.
+  // Lyrics text from LRCLIB (when found) is handed over as a reference to get the wording right.
+  const handleAiLyrics = async (opts: { titleOverride?: string; ytOverride?: string } = {}) => {
+    const songTitle = (opts.titleOverride ?? title).trim();
+    const artistName = artists.find((a) => a.id === artistId)?.name || suggestedArtistName || '';
     setIsFindingLyrics(true);
-    setLyricsNote('');
+    setLyricsNote('Đang tìm lời đã canh sẵn…');
     try {
-      const found = await adminService.lookupLyrics({
-        title: title.trim(),
-        artist: artists.find((a) => a.id === artistId)?.name || suggestedArtistName || '',
-        duration: parseDurationToSeconds(duration),
-      });
-      setLyrics(found.plainLyrics);
-      setSyncedLyrics(found.syncedLyrics || '');
-      setLyricsNote(`Đã điền lời "${found.source.trackName}" – ${found.source.artistName}${found.syncedLyrics ? ' (có lời chạy theo thời gian)' : ''}. Kiểm tra lại trước khi lưu.`);
+      const found = songTitle
+        ? await adminService.lookupLyrics({ title: songTitle, artist: artistName, duration: parseDurationToSeconds(duration) }).catch(() => null)
+        : null;
+      // Hand-timed LRCLIB lyrics beat any AI timing: use them as they are.
+      if (found?.syncedLyrics) {
+        setLyrics(found.plainLyrics);
+        setSyncedLyrics(found.syncedLyrics);
+        setLyricsNote(`Đã lấy lời canh sẵn "${found.source.trackName}" – ${found.source.artistName} từ LRCLIB.`);
+        return;
+      }
+      setLyricsNote('AI đang nghe bài hát và căn thời gian từng câu… (có thể mất 30–60 giây)');
+      const reference = lyrics.trim() || found?.plainLyrics || '';
+      const form = new FormData();
+      form.append('title', songTitle);
+      form.append('artist', artistName);
+      if (reference) form.append('lyrics', reference);
+      const yt = opts.ytOverride ?? youtubeUrl;
+      if (opts.ytOverride || sourceType === 'youtube') form.append('youtubeUrl', yt.trim());
+      else if (sourceType === 'upload' && audioFile) form.append('audioFile', audioFile);
+      else form.append('audioUrl', audioUrl.trim().startsWith('/') ? new URL(audioUrl.trim(), window.location.origin).href : audioUrl.trim());
+      const result = await adminService.aiTranscribeLyrics(form);
+      setLyrics(result.plainLyrics);
+      setSyncedLyrics(result.syncedLyrics);
+      setLyricsNote(`${result.engine === 'whisper' ? 'Whisper' : 'Gemini'} đã tạo ${result.syncedLyrics.split('\n').length} dòng lời chạy theo thời gian. Có thể chỉnh lại trước khi lưu.`);
     } catch (err: any) {
-      setLyricsNote(err.response?.data?.message || 'Không tìm được lời bài hát.');
+      setLyricsNote(err.response?.data?.message || 'AI chưa phân tích được lời bài hát.');
     } finally {
       setIsFindingLyrics(false);
     }
@@ -910,12 +938,13 @@ export const SongModal: React.FC<SongModalProps> = ({
               </label>
               <button
                 type="button"
-                onClick={handleFindLyrics}
-                disabled={isFindingLyrics || !title.trim()}
+                onClick={() => handleAiLyrics()}
+                disabled={isFindingLyrics || !hasAudioSource}
+                title={hasAudioSource ? 'AI nghe nhạc và tạo lời chạy theo thời gian' : 'Chọn nguồn nhạc trước'}
                 className="text-[11px] font-semibold text-amber-300 hover:text-amber-200 disabled:opacity-50 flex items-center gap-1"
               >
-                <Search className="w-3.5 h-3.5" />
-                {isFindingLyrics ? 'Đang tìm…' : 'Tự tìm lời'}
+                {isFindingLyrics ? <div className="w-3 h-3 rounded-full border-2 border-amber-300 border-t-transparent animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {isFindingLyrics ? 'AI đang phân tích…' : 'AI phân tích lời'}
               </button>
             </div>
             {lyricsNote && <p className="text-[11px] text-text-secondary">{lyricsNote}</p>}
@@ -930,7 +959,7 @@ export const SongModal: React.FC<SongModalProps> = ({
 
           <div className="space-y-1">
             <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary">
-              Lời bài hát khớp thời gian (JSON / LRC)
+              Lời bài hát khớp thời gian (AI tự tạo, LRC)
             </label>
             <textarea
               value={syncedLyrics}

@@ -13,6 +13,10 @@ type RepeatMode = 'off' | 'all' | 'one';
 
 let playbackRequestId = 0;
 
+let jamGuestLocked = false;
+/** Set by the Jam store while this device is a guest in a room (JamSync still pauses via pause()). */
+export const setJamGuestLock = (locked: boolean) => { jamGuestLocked = locked; };
+
 interface PlayerState {
   adSeconds: number;
   isAuthorizing: boolean;
@@ -387,10 +391,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         get().initAudio();
         audio = getAudioElement()!;
       }
-      if (!isAttached(audio)) {
-        if (useEq) audio.crossOrigin = 'anonymous';
-        else audio.removeAttribute('crossorigin');
-      }
+      // Always request CORS for EQ sources, even on an already-wired element: one attached while playing a
+      // same-origin file has no crossorigin, and would output silence for a cross-origin (Supabase) file.
+      if (useEq) audio.crossOrigin = 'anonymous';
+      else if (!isAttached(audio)) audio.removeAttribute('crossorigin');
       audio.src = url;
       if (useEq) {
         ensureAudioContext();
@@ -438,6 +442,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
 
     if (isPlaying) {
+      // Jam guests follow the host: only the host may pause the room's song.
+      if (jamGuestLocked) return;
       get().pause();
     } else {
       get().resume();

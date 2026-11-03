@@ -6,9 +6,10 @@ import { useJamStore, JamSnapshot } from '../../store/jamStore.js';
 import { usePlayerStore } from '../../store/playerStore.js';
 import { useAuthStore } from '../../store/authStore.js';
 
-const POLL_MS = 2000;
-const HOST_HEARTBEAT_MS = 5000;
-const DRIFT_TOLERANCE_SEC = 2;
+const POLL_MS = 1000;
+const HOST_HEARTBEAT_MS = 3000;
+const DRIFT_TOLERANCE_SEC = 2; // host: how far currentTime must jump to count as a seek
+const GUEST_DRIFT_SEC = 0.8; // guest: re-seek when this far from the host
 
 /**
  * Keeps this device in step with its Jam room while the user browses anywhere in the app.
@@ -48,7 +49,7 @@ export const JamSync: React.FC = () => {
       const elapsed = snap.isPlaying ? (Date.parse(snap.serverNow) - Date.parse(snap.stateAt) + rttMs / 2) / 1000 : 0;
       const expected = snap.positionSec + elapsed;
       const fresh = usePlayerStore.getState();
-      if (fresh.duration > 0 && !fresh.isBuffering && Math.abs(fresh.currentTime - expected) > DRIFT_TOLERANCE_SEC) {
+      if (fresh.duration > 0 && !fresh.isBuffering && Math.abs(fresh.currentTime - expected) > GUEST_DRIFT_SEC) {
         fresh.seek(Math.max(0, Math.min(expected, fresh.duration - 1)));
       }
     };
@@ -102,7 +103,7 @@ export const JamSync: React.FC = () => {
     };
     const schedule = () => {
       clearTimeout(debounce);
-      debounce = setTimeout(publish, 400);
+      debounce = setTimeout(publish, 250);
     };
 
     publish();
@@ -112,7 +113,11 @@ export const JamSync: React.FC = () => {
       // A seek shows up as currentTime moving far from where steady playback would put it.
       const predicted = lastSent.position + (lastSent.isPlaying ? (Date.now() - lastSent.at) / 1000 : 0);
       const seeked = s.currentSong?.id === lastSent.songId && Math.abs(s.currentTime - predicted) > DRIFT_TOLERANCE_SEC;
-      if (songChanged || playChanged || seeked) schedule();
+      // Song and play/pause changes go out at once; only seeks are debounced (scrubbing fires many).
+      if (songChanged || playChanged) {
+        clearTimeout(debounce);
+        publish();
+      } else if (seeked) schedule();
     });
     const heartbeat = setInterval(() => {
       if (usePlayerStore.getState().isPlaying) publish();

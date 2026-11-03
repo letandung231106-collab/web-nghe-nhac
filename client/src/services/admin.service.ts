@@ -125,6 +125,16 @@ export const adminService = {
     return res.data.data;
   },
 
+  /** AI listens to the audio (youtubeUrl / audioUrl / audioFile in the form) and returns time-synced lyrics. */
+  async aiTranscribeLyrics(form: FormData) {
+    const res = await api.post<ApiResponse<{ plainLyrics: string; syncedLyrics: string; engine: 'whisper' | 'gemini' }>>(
+      '/admin/lyrics/ai-transcribe',
+      form,
+      { timeout: 150000, headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+    return res.data.data;
+  },
+
   async autoLyrics(songId: string) {
     const res = await api.post<ApiResponse<Lyrics>>(`/admin/songs/${songId}/auto-lyrics`);
     return res.data.data;
