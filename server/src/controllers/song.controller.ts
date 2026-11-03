@@ -7,6 +7,7 @@ import { SecurityLogger } from '../utils/securityLogger.js';
 import { appCache } from '../utils/cacheManager.js';
 import { playbackBuffer } from '../services/playbackBuffer.js';
 import { uploadPublicMedia } from '../services/storage.js';
+import { AILyricsService } from '../services/aiLyricsService.js';
 
 export const getAllSongs = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -789,5 +790,114 @@ export const getMySongContributions = async (req: AuthenticatedRequest, res: Res
     return sendSuccess(res, songs);
   } catch (error: any) {
     return sendError(res, error.message || 'Không thể tải danh sách bài hát đã đóng góp.', 500);
+  }
+};
+
+
+export const translateSongLyrics = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const song = await prisma.song.findUnique({
+      where: { id },
+      include: {
+        artist: { select: { id: true, name: true } },
+        lyrics: true,
+      },
+    });
+
+    if (!song) {
+      return sendError(res, 'Không tìm thấy bài hát.', 404);
+    }
+
+    if (!song.lyrics) {
+      return sendError(res, 'Bài hát chưa có lời để dịch.', 400);
+    }
+
+    // Check if translatedLyrics is already cached in database
+    if (song.lyrics.translatedLyrics) {
+      try {
+        const parsed = JSON.parse(song.lyrics.translatedLyrics);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return sendSuccess(res, {
+            songId: id,
+            translatedLyrics: parsed,
+            fromCache: true,
+          });
+        }
+      } catch {
+        // Fallback to re-translating if JSON is corrupt
+      }
+    }
+
+    // Parse the synced lyrics
+    const rawSynced = song.lyrics.syncedLyrics;
+    const lines = AILyricsService.parseSyncedLyrics(rawSynced);
+
+    if (!lines || lines.length === 0) {
+      return sendError(res, 'Bài hát chưa có lời đồng bộ (synced lyrics) để dịch song song.', 400);
+    }
+
+    const translatedLines = await AILyricsService.translateSyncedLyrics(
+      song.title,
+      song.artist?.name || '',
+      lines
+    );
+
+    // Save to database so next time it is 0 cost!
+    await prisma.lyrics.update({
+      where: { songId: id },
+      data: {
+        translatedLyrics: JSON.stringify(translatedLines),
+      },
+    });
+
+    return sendSuccess(res, {
+      songId: id,
+      translatedLyrics: translatedLines,
+      fromCache: false,
+    });
+  } catch (error: any) {
+    console.error('AI_LYRICS_TRANSLATE_ERROR:', error);
+    return sendError(res, error.message || 'Lỗi khi dịch lời bài hát bằng AI.', 500);
+  }
+};
+
+export const explainSongLyric = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { lineText } = req.body;
+
+    if (!lineText || typeof lineText !== 'string' || !lineText.trim()) {
+      return sendError(res, 'Vui lòng cung cấp câu hát cần giải thích.', 400);
+    }
+
+    const song = await prisma.song.findUnique({
+      where: { id },
+      include: {
+        artist: { select: { id: true, name: true } },
+        lyrics: true,
+      },
+    });
+
+    if (!song) {
+      return sendError(res, 'Không tìm thấy bài hát.', 404);
+    }
+
+    const explanation = await AILyricsService.explainLyricLine(
+      song.title,
+      song.artist?.name || '',
+      song.lyrics?.plainLyrics || song.lyrics?.syncedLyrics || '',
+      lineText,
+      song.id
+    );
+
+    return sendSuccess(res, {
+      songId: id,
+      lineText,
+      ...explanation,
+    });
+  } catch (error: any) {
+    console.error('AI_LYRIC_EXPLAIN_ERROR:', error);
+    return sendError(res, error.message || 'Lỗi khi giải thích ý nghĩa câu hát bằng AI.', 500);
   }
 };

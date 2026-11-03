@@ -73,12 +73,20 @@ export interface Lyrics {
   songId: string;
   plainLyrics: string;
   syncedLyrics?: string | null;
+  translatedLyrics?: string | null;
   isSynced: boolean;
+}
+
+export interface LyricExplanation {
+  meaning: string;
+  context: string;
+  emotion: string;
 }
 
 export interface SyncedLyricLine {
   time: number;
   text: string;
+  translation?: string;
 }
 
 export interface Song {
