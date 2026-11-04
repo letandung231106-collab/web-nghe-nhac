@@ -53,23 +53,38 @@ export async function transcribeLyrics(
   source: TranscribeSource,
   hint: { title?: string; artist?: string; lyrics?: string; forceAi?: boolean }
 ) {
-  // Published lyrics beat anything heard from the audio: use LRCLIB's synced lines as-is (unless forceAi is requested),
-  // or its plain text as the reference the audio is aligned to.
+  // Published wording beats anything heard, but LRCLIB's timestamps belong to the official audio:
+  // an uploaded MV with a longer intro would run lines early. So its text is the reference the
+  // uploaded audio is aligned to, and its own timing is only a fallback when alignment is impossible.
+  let lrclibSynced: string | null = null;
   if (!hint.lyrics?.trim() && hint.title) {
     const match = await findLyrics({ title: hint.title, artistName: hint.artist || '' });
-    if (match?.syncedLyrics && !hint.forceAi) return { plainLyrics: match.plainLyrics, syncedLyrics: match.syncedLyrics, engine: 'lrclib' as const };
     if (match?.plainLyrics) hint = { ...hint, lyrics: match.plainLyrics };
+    lrclibSynced = match?.syncedLyrics ?? null;
   }
+  const lrclibFallback = () =>
+    !hint.forceAi && lrclibSynced
+      ? { plainLyrics: hint.lyrics || '', syncedLyrics: lrclibSynced, engine: 'lrclib' as const }
+      : null;
   if (source.kind === 'audio' && whisperAvailable()) {
     try {
       const vietnamese = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(`${hint.title} ${hint.artist} ${hint.lyrics}`);
       const { words, segments } = await whisperTranscribe(source.data, source.mimeType, vietnamese ? 'vi' : undefined);
       const reference = (hint.lyrics || '').split('\n').map((l) => l.trim()).filter(Boolean);
-      const lines = (reference.length ? alignLines(reference, words) : null) ?? segmentLines(segments);
+      const aligned = reference.length ? alignLines(reference, words) : null;
+      if (aligned?.length) return finish(aligned, 'whisper');
+      // Whisper's own guesses are worse than published lyrics, even with the published timing.
+      const fallback = lrclibFallback();
+      if (fallback) return fallback;
+      const lines = segmentLines(segments);
       if (lines.length) return finish(lines, 'whisper');
     } catch (err) {
-      console.warn('[Lyrics] Whisper failed, falling back to Gemini:', err);
+      console.warn('[Lyrics] Whisper failed, falling back:', err);
     }
+  }
+  if (source.kind === 'audio') {
+    const fallback = lrclibFallback();
+    if (fallback) return fallback;
   }
   return geminiTranscribe(source, hint);
 }
