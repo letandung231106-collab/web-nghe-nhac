@@ -400,7 +400,7 @@ export const FullScreenPlayer: React.FC = () => {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-xs font-medium text-text-secondary hover:text-white border border-white/[0.08] transition-colors active:scale-95"
                 >
                   <Mic2 className="w-3.5 h-3.5" />
-                  <span>Lời bài hát</span>
+                  <span>Lời & Karaoke</span>
                 </button>
 
                 <button

@@ -387,7 +387,7 @@ export const BottomPlayer: React.FC = () => {
                   ? 'text-primary-400 bg-white/10'
                   : 'text-text-muted hover:text-white hover:bg-white/5'
               }`}
-              title="Lyrics"
+              title="Lời bài hát & Hát Karaoke"
             >
               <Mic2 className="w-4 h-4" />
             </button>

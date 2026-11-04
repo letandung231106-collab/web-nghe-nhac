@@ -30,6 +30,22 @@ export const QUIZ_ROUND_MS = 30_000;
 export const QUIZ_OPTIONS = 4;
 type Room = NonNullable<Awaited<ReturnType<typeof openRoom>>>;
 
+export interface JamKaraokeScore {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  songId: string;
+  totalScore: number;
+  rank: string;
+  perfectCount: number;
+  goodCount: number;
+  missCount: number;
+  maxCombo: number;
+  updatedAt: Date;
+}
+// Ephemeral in-memory leaderboard for live karaoke scoring per room
+const roomKaraokeScores = new Map<string, Map<string, JamKaraokeScore>>();
+
 /** Points for a correct answer: 50 for being right, up to 100 more for answering fast. */
 export const quizPoints = (msLeft: number) => 50 + Math.round(100 * Math.max(0, Math.min(1, msLeft / QUIZ_ROUND_MS)));
 
@@ -167,6 +183,9 @@ router.get('/:code', requireAuth, wrap(async (req, res) => {
       myChoiceId: me.quizAnsweredRound === room.quizRound ? me.quizLastChoice : null,
       myPoints: me.quizAnsweredRound === room.quizRound ? me.quizLastPoints : null,
     } : null,
+    karaokeLeaderboard: Array.from(roomKaraokeScores.get(room.id)?.values() || [])
+      .filter((entry) => !room.songId || entry.songId === room.songId)
+      .sort((a, b) => b.totalScore - a.totalScore),
   });
 }));
 
@@ -314,11 +333,89 @@ router.post('/:code/leave', requireAuth, wrap(async (req, res) => {
   if (!room) return sendSuccess(res, null);
   const userId = req.user!.userId;
   if (room.hostId === userId) {
+    roomKaraokeScores.delete(room.id);
     await prisma.jamRoom.update({ where: { id: room.id }, data: { endedAt: room.endedAt || new Date(), isPlaying: false } });
   } else {
     await prisma.jamMember.deleteMany({ where: { roomId: room.id, userId } });
   }
   return sendSuccess(res, null, room.hostId === userId ? 'Đã đóng phòng.' : 'Đã rời phòng.');
+}));
+
+const karaokeScoreSchema = z.object({
+  songId: z.string().min(1).max(64),
+  totalScore: z.number().int().min(0).max(1_000_000),
+  rank: z.enum(['SSS', 'SS', 'S', 'A', 'B', 'C']),
+  perfectCount: z.number().int().min(0),
+  goodCount: z.number().int().min(0),
+  missCount: z.number().int().min(0),
+  maxCombo: z.number().int().min(0),
+  isLive: z.boolean().optional(),
+});
+
+router.post('/:code/karaoke/score', requireAuth, wrap(async (req, res) => {
+  const parsed = karaokeScoreSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 'Dữ liệu điểm số không hợp lệ.', 400);
+
+  const room = await openRoom(req.params.code);
+  if (!room) return sendError(res, 'Phòng nghe chung đã kết thúc.', 404);
+
+  const userId = req.user!.userId;
+  const member = await prisma.jamMember.findUnique({ where: { roomId_userId: { roomId: room.id, userId } }, include: { user: userSelect } });
+  if (!member) return sendError(res, 'Bạn chưa vào phòng này.', 403);
+
+  let roomMap = roomKaraokeScores.get(room.id);
+  if (!roomMap) {
+    roomMap = new Map<string, JamKaraokeScore>();
+    roomKaraokeScores.set(room.id, roomMap);
+  }
+
+  const { songId, totalScore, rank, perfectCount, goodCount, missCount, maxCombo, isLive } = parsed.data;
+  roomMap.set(userId, {
+    userId,
+    username: member.user.username,
+    avatarUrl: member.user.avatarUrl,
+    songId,
+    totalScore,
+    rank,
+    perfectCount,
+    goodCount,
+    missCount,
+    maxCombo,
+    updatedAt: new Date(),
+  });
+
+  // Khi người dùng hoàn thành toàn bộ bài hát, gửi thông báo chúc mừng vào phòng chat
+  if (!isLive && totalScore > 0) {
+    const song = await prisma.song.findUnique({ where: { id: songId }, select: { title: true } });
+    const songTitle = song ? ` bài "${song.title}"` : '';
+    await prisma.jamMessage.create({
+      data: {
+        roomId: room.id,
+        userId,
+        kind: 'quiz',
+        text: `🎤 ${member.user.username} vừa đạt ${totalScore.toLocaleString()} điểm (Hạng ${rank})${songTitle} với chuỗi ${maxCombo} Combo!`,
+      },
+    });
+  }
+
+  return sendSuccess(res, {
+    leaderboard: Array.from(roomMap.values())
+      .filter((e) => e.songId === songId)
+      .sort((a, b) => b.totalScore - a.totalScore),
+  });
+}));
+
+router.post('/:code/karaoke/reset', requireAuth, wrap(async (req, res) => {
+  const room = await openRoom(req.params.code);
+  if (!room) return sendError(res, 'Phòng nghe chung đã kết thúc.', 404);
+  if (room.hostId !== req.user!.userId) return sendError(res, 'Chỉ chủ phòng mới làm mới được bảng điểm Karaoke.', 403);
+
+  roomKaraokeScores.delete(room.id);
+  await prisma.jamMessage.create({
+    data: { roomId: room.id, userId: room.hostId, kind: 'quiz', text: 'Chủ phòng đã làm mới Bảng xếp hạng Hát Karaoke.' },
+  });
+
+  return sendSuccess(res, null, 'Đã làm mới bảng xếp hạng Karaoke.');
 }));
 
 export default router;

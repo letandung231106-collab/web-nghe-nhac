@@ -212,11 +212,12 @@ let serverInstance: any = null;
 
 if (!process.env.VERCEL) {
   const PORT = config.port || 5000;
-  serverInstance = app.listen(PORT, () => {
-    console.log(`🎵 MusicWave Backend Server is running on http://localhost:${PORT}`);
-    console.log(`📡 API endpoints active at http://localhost:${PORT}/api`);
-    console.log(`🩺 Health probe active at http://localhost:${PORT}/health`);
-    console.log(`⚡ Readiness probe active at http://localhost:${PORT}/ready`);
+  const HOST = process.env.HOST || '127.0.0.1';
+  serverInstance = app.listen(PORT, HOST, () => {
+    console.log(`🎵 MusicWave Backend Server is running on http://${HOST}:${PORT}`);
+    console.log(`📡 API endpoints active at http://${HOST}:${PORT}/api`);
+    console.log(`🩺 Health probe active at http://${HOST}:${PORT}/health`);
+    console.log(`⚡ Readiness probe active at http://${HOST}:${PORT}/ready`);
   });
 }
 

@@ -33,6 +33,20 @@ export interface JamMessageInfo {
   user?: { id: string; username: string; avatarUrl: string | null };
 }
 
+export interface JamKaraokeLeaderboardEntry {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  songId: string;
+  totalScore: number;
+  rank: string;
+  perfectCount: number;
+  goodCount: number;
+  missCount: number;
+  maxCombo: number;
+  updatedAt: string;
+}
+
 export interface JamSnapshot {
   ended: boolean;
   code: string;
@@ -47,6 +61,7 @@ export interface JamSnapshot {
   messages: JamMessageInfo[];
   pendingSongs: Song[];
   quiz: JamQuizState | null;
+  karaokeLeaderboard?: JamKaraokeLeaderboardEntry[];
 }
 
 const SESSION_KEY = 'musicwave_jam_code';
@@ -68,11 +83,23 @@ interface JamState {
   ended: boolean;
   error: string | null;
   quiz: JamQuizState | null;
+  karaokeLeaderboard: JamKaraokeLeaderboardEntry[];
   serverOffsetMs: number; // server clock minus local clock, for the quiz countdown
   startQuiz: (songId?: string) => Promise<void>; // no song: the server draws one at random
   answerQuiz: (songId: string) => Promise<{ correct: boolean; points: number }>;
   revealQuiz: () => Promise<void>;
   resetQuiz: () => Promise<void>;
+  submitKaraokeScore: (scoreData: {
+    songId: string;
+    totalScore: number;
+    rank: string;
+    perfectCount: number;
+    goodCount: number;
+    missCount: number;
+    maxCombo: number;
+    isLive?: boolean;
+  }) => Promise<void>;
+  resetKaraokeScores: () => Promise<void>;
   createRoom: () => Promise<string>;
   joinRoom: (code: string) => void;
   leaveRoom: () => Promise<void>;
@@ -86,11 +113,28 @@ interface JamState {
 }
 
 const empty = { isHost: false, hostId: null, roomSong: null, roomPlaying: false, members: [], messages: [], ended: false, error: null,
-  quiz: null, serverOffsetMs: 0 };
+  quiz: null, karaokeLeaderboard: [], serverOffsetMs: 0 };
 
 export const useJamStore = create<JamState>((set, get) => ({
   code: readSavedCode(),
   ...empty,
+
+  submitKaraokeScore: async (scoreData) => {
+    const code = get().code;
+    if (!code) return;
+    const res = await api.post(`/jam/${code}/karaoke/score`, scoreData);
+    if (res.data?.data?.leaderboard) {
+      set({ karaokeLeaderboard: res.data.data.leaderboard });
+    }
+  },
+
+  resetKaraokeScores: async () => {
+    const code = get().code;
+    if (code) {
+      await api.post(`/jam/${code}/karaoke/reset`);
+      set({ karaokeLeaderboard: [] });
+    }
+  },
 
   startQuiz: async (songId) => {
     const code = get().code;
@@ -173,6 +217,7 @@ export const useJamStore = create<JamState>((set, get) => ({
         ended: false,
         error: null,
         quiz: snap.quiz,
+        karaokeLeaderboard: snap.karaokeLeaderboard || s.karaokeLeaderboard,
         serverOffsetMs: Date.parse(snap.serverNow) - Date.now(),
       };
     });
