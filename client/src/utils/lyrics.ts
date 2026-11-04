@@ -44,3 +44,39 @@ export const toShiftedLrc = (lines: SyncedLyricLine[], shiftSec: number) =>
       return `[${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}] ${text}`;
     })
     .join('\n');
+
+
+/**
+ * Merges translated lines (JSON or array) into the synced lines
+ */
+export const mergeTranslatedLyrics = (
+  lines: SyncedLyricLine[],
+  translatedRaw?: string | null | SyncedLyricLine[]
+): SyncedLyricLine[] => {
+  if (!translatedRaw || lines.length === 0) return lines;
+
+  let transArray: Array<{ time?: number; translation?: string; text?: string }> = [];
+
+  if (Array.isArray(translatedRaw)) {
+    transArray = translatedRaw;
+  } else {
+    try {
+      const parsed = JSON.parse(translatedRaw);
+      if (Array.isArray(parsed)) {
+        transArray = parsed;
+      }
+    } catch {
+      return lines;
+    }
+  }
+
+  if (transArray.length === 0) return lines;
+
+  return lines.map((line, idx) => {
+    const match = transArray[idx] || transArray.find((t) => Math.abs((t.time ?? -999) - line.time) < 0.2);
+    return {
+      ...line,
+      translation: match?.translation || line.translation,
+    };
+  });
+};
