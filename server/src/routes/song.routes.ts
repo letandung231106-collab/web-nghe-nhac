@@ -11,6 +11,8 @@ import {
   deleteSong,
   getMySongContributions,
   getYoutubeInfo,
+  translateSongLyrics,
+  explainSongLyric,
 } from '../controllers/song.controller.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
@@ -28,6 +30,8 @@ router.get('/my-contributions', requireAuth, requireAdmin, getMySongContribution
 router.get('/youtube-info', requireAuth, requireAdmin, getYoutubeInfo);
 router.use('/:id/ratings', ratingRoutes);
 router.get('/:id', optionalAuth, getSongById);
+router.post('/:id/lyrics/translate', optionalAuth, translateSongLyrics);
+router.post('/:id/lyrics/explain', optionalAuth, explainSongLyric);
 router.post(
   '/',
   requireAuth,

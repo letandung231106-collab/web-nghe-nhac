@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Users, Copy, Check, LogOut, Crown, Music2, Plus, Radio, Play, ListPlus } from 'lucide-react';
+import { Users, Copy, Check, LogOut, Crown, Music2, Plus, Radio, Play, ListPlus, QrCode, ScanLine } from 'lucide-react';
+import { QrShareModal, QrScanModal } from '../components/jam/JamQr.js';
 import { useJamStore, useQuizMask } from '../store/jamStore.js';
 import { QuizPanel } from '../components/jam/QuizPanel.js';
 import { JamKaraokeLeaderboard } from '../components/jam/JamKaraokeLeaderboard.js';
@@ -24,6 +25,7 @@ const Landing: React.FC = () => {
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [scanning, setScanning] = useState(false);
 
   const handleCreate = async () => {
     setBusy(true);
@@ -73,8 +75,14 @@ const Landing: React.FC = () => {
             className="w-full rounded-xl bg-black/20 border border-white/10 p-3 text-center text-xl font-mono tracking-[0.4em] text-white placeholder:text-text-muted placeholder:tracking-normal placeholder:text-base focus:outline-none focus:border-emerald-300/60"
           />
           <Button type="submit" variant="secondary" className="w-full">Vào phòng</Button>
+          <Button type="button" variant="ghost" className="w-full" onClick={() => setScanning(true)} leftIcon={<ScanLine className="w-4 h-4" />}>
+            Quét mã QR
+          </Button>
         </form>
       </div>
+      {scanning && (
+        <QrScanModal onClose={() => setScanning(false)} onCode={(code) => { setScanning(false); navigate(`/jam/${code}`); }} />
+      )}
       {error && <p role="alert" className="text-sm text-rose-400">{error}</p>}
       <p className="text-xs text-text-muted">
         Mỗi người nghe trên tài khoản của mình: tài khoản Free vẫn tính lượt nghe và quảng cáo theo quy định của Music Pro.
@@ -166,6 +174,7 @@ const Room: React.FC<{ code: string }> = ({ code }) => {
   const isPlaying = useIsPlaying();
   const playbackError = usePlayerStore((s) => s.playbackError);
   const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   const maskedRoomSong = useQuizMask(roomSong);
 
@@ -215,11 +224,15 @@ const Room: React.FC<{ code: string }> = ({ code }) => {
             <Button variant="secondary" size="sm" onClick={copyLink} leftIcon={copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}>
               {copied ? 'Đã sao chép' : 'Mời bạn bè'}
             </Button>
+            <Button variant="secondary" size="sm" onClick={() => setShowQr(true)} leftIcon={<QrCode className="w-4 h-4" />}>
+              Mã QR
+            </Button>
             <Button variant="ghost" size="sm" onClick={handleLeave} leftIcon={<LogOut className="w-4 h-4" />}>
               {isHost ? 'Đóng phòng' : 'Rời phòng'}
             </Button>
           </div>
         </div>
+        {showQr && <QrShareModal code={code} link={link} onClose={() => setShowQr(false)} />}
 
         <div className="relative overflow-hidden rounded-2xl border border-white/10 p-5 flex items-center gap-5">
           {shownSong && <img src={shownSong.coverUrl} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl opacity-30 scale-125" />}

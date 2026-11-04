@@ -31,7 +31,9 @@ export const getMediaUrl = (url?: string | null): string => {
   if (!rawApiUrl && Capacitor.isNativePlatform()) {
     rawApiUrl = 'https://musicwave-app.vercel.app/api';
   }
-  const baseUrl = rawApiUrl ? rawApiUrl.replace(/\/api\/?$/, '') : 'https://musicwave-app.vercel.app';
+  // Empty or relative API URL (web + Vite proxy / same-origin deploy): keep the path relative so
+  // /uploads and /api/media hit the same server that issued the playback ticket.
+  const baseUrl = rawApiUrl ? rawApiUrl.replace(/\/api\/?$/, '') : '';
   const cleanUrl = resolved.startsWith('/') ? resolved : `/${resolved}`;
 
   return `${baseUrl}${cleanUrl}`;

@@ -57,7 +57,7 @@ const ArtistCardComponent: React.FC<ArtistCardProps> = ({ artist, className = ''
     <Link
       to={`/artist/${artist.id}`}
       onMouseEnter={handleMouseEnter}
-      className={`group flex flex-col items-center text-center p-2.5 sm:p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.05] hover:border-white/[0.12] transition-colors duration-150 active:scale-[0.98] select-none ${className}`}
+      className={`group flex flex-col items-center text-center p-2.5 sm:p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.05] hover:border-white/[0.12] anim-card select-none ${className}`}
     >
       {/* Circular Avatar */}
       <div className="relative w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-full overflow-hidden mb-2 sm:mb-2.5 shadow border border-white/10 flex-shrink-0">

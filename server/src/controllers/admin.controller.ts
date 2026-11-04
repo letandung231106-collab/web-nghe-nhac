@@ -20,6 +20,8 @@ import {
 } from '../services/storage.js';
 import { isAllowedMedia } from '../middleware/upload.js';
 import { findLyrics } from '../services/lyricsLookup.js';
+import { transcribeLyrics, TranscribeSource } from '../services/lyricsTranscribe.js';
+import fs from 'fs/promises';
 
 /** Fills in lyrics for a song that has none, from LRCLIB. Never fails the caller: returns whether lyrics were saved. */
 const attachLyricsIfFound = async (songId: string, title: string, artistName: string, duration?: number | null) => {
@@ -45,6 +47,39 @@ export const lookupLyrics = async (req: AuthenticatedRequest, res: Response) => 
   if (!title) return sendError(res, 'Cần tên bài hát để tìm lời.', 400);
   const match = await findLyrics({ title, artistName, duration: Number(req.query.duration) || undefined });
   return match ? sendSuccess(res, match) : sendError(res, 'Không tìm thấy lời phù hợp cho bài này.', 404);
+};
+
+/** Admin: AI listens to the audio (YouTube link, audio URL or uploaded file) and returns time-synced lyrics, unsaved. */
+export const aiTranscribeLyrics = async (req: AuthenticatedRequest, res: Response) => {
+  const file = (req.files as Record<string, Express.Multer.File[]> | undefined)?.audioFile?.[0];
+  const youtubeUrl = String(req.body.youtubeUrl || '').trim();
+  const audioUrl = String(req.body.audioUrl || '').trim();
+  const hint = {
+    title: String(req.body.title || '').slice(0, 300),
+    artist: String(req.body.artist || '').slice(0, 300),
+    lyrics: String(req.body.lyrics || ''),
+  };
+  try {
+    let source: TranscribeSource;
+    if (file) {
+      source = { kind: 'audio', data: await fs.readFile(file.path), mimeType: file.mimetype || 'audio/mpeg' };
+    } else if (/^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//i.test(youtubeUrl)) {
+      source = { kind: 'youtube', url: youtubeUrl };
+    } else if (audioUrl) {
+      if (!validateSafeUrl(audioUrl).isValid) return sendError(res, 'URL nhạc không hợp lệ.', 400);
+      const audio = await fetch(audioUrl, { signal: AbortSignal.timeout(30000) });
+      if (!audio.ok) return sendError(res, 'Không tải được tệp nhạc từ URL.', 400);
+      source = { kind: 'audio', data: Buffer.from(await audio.arrayBuffer()), mimeType: audio.headers.get('content-type') || 'audio/mpeg' };
+    } else {
+      return sendError(res, 'Cần nguồn nhạc (YouTube, URL hoặc tệp) để AI phân tích lời.', 400);
+    }
+    return sendSuccess(res, await transcribeLyrics(source, hint));
+  } catch (err) {
+    console.warn('[Lyrics] AI transcribe failed:', err);
+    return sendError(res, err instanceof Error && !(err instanceof SyntaxError) ? err.message : 'AI trả về kết quả không hợp lệ.', 502);
+  } finally {
+    if (file) fs.unlink(file.path).catch(() => {});
+  }
 };
 
 /** Admin: find and save lyrics for an existing song. */

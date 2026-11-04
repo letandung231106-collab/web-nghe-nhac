@@ -1,15 +1,15 @@
 import React, { useEffect, useRef, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
-import { X, Music2, Play, Pause, Minus, Plus, Loader2, Search, Mic, Trophy } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { X, Music2, Play, Pause, Minus, Plus, Loader2, Search, Sparkles, Languages, Mic, Trophy } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { usePlayerStore, useCurrentSong, useIsPlaying } from '../../store/playerStore.js';
 import { useQuizMask, useJamStore } from '../../store/jamStore.js';
-import { parseSyncedLyrics, toShiftedLrc } from '../../utils/lyrics.js';
+import { parseSyncedLyrics, toShiftedLrc, mergeTranslatedLyrics } from '../../utils/lyrics.js';
 import { songService } from '../../services/song.service.js';
 import { QUERY_KEYS, queryClient } from '../../services/queryClient.js';
 import { adminService } from '../../services/admin.service.js';
 import { useAuthStore } from '../../store/authStore.js';
-import { Lyrics } from '../../types/index.js';
+import { Lyrics, LyricExplanation, SyncedLyricLine } from '../../types/index.js';
 import { formatDuration } from '../../utils/format.js';
 import { KaraokePitchVisualizer } from '../karaoke/KaraokePitchVisualizer.js';
 import { KaraokeResultModal } from '../karaoke/KaraokeResultModal.js';
@@ -21,9 +21,11 @@ const MAX_LINE_SECONDS = 6;
 const BREAK_SECONDS = 5;
 
 // The store's currentTime only ticks ~4 times per second; interpolate between ticks so the
-// karaoke fill sweeps smoothly instead of jumping.
-const useSmoothTime = () => {
-  const [time, setTime] = useState(() => usePlayerStore.getState().currentTime);
+// karaoke fill sweeps smoothly instead of jumping. Runs every frame without re-rendering:
+// the caller writes to the DOM directly and only sets state when something visible changes.
+const useSmoothClock = (onFrame: (time: number) => void) => {
+  const onFrameRef = useRef(onFrame);
+  onFrameRef.current = onFrame;
   useEffect(() => {
     let frame = 0;
     let base = usePlayerStore.getState().currentTime;
@@ -37,7 +39,7 @@ const useSmoothTime = () => {
     const tick = () => {
       const { isPlaying, isBuffering, playbackRate } = usePlayerStore.getState();
       const elapsed = isPlaying && !isBuffering ? Math.min(1, (performance.now() - baseAt) / 1000) : 0;
-      setTime(base + elapsed * (playbackRate || 1));
+      onFrameRef.current(base + elapsed * (playbackRate || 1));
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -46,7 +48,6 @@ const useSmoothTime = () => {
       unsubscribe();
     };
   }, []);
-  return time;
 };
 
 const KaraokeBody: React.FC = () => {
@@ -55,7 +56,7 @@ const KaraokeBody: React.FC = () => {
   const duration = usePlayerStore((s) => s.duration);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
   const seek = usePlayerStore((s) => s.seek);
-  const smoothTime = useSmoothTime();
+  const currentTime = usePlayerStore((s) => s.currentTime);
 
   // Songs played from lists don't carry lyrics; fetch the detail record when needed.
   const { data: detail, isLoading } = useQuery({
@@ -88,19 +89,41 @@ const KaraokeBody: React.FC = () => {
   const [syncMode, setSyncMode] = useState(false);
   const [savingOffset, setSavingOffset] = useState(false);
   const [offsetNote, setOffsetNote] = useState('');
+
+  // Parallel translation state
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translationError, setTranslationError] = useState('');
+  const [translatedCache, setTranslatedCache] = useState<SyncedLyricLine[] | null>(null);
+
+  // AI Storytelling state
+  const [selectedStoryLine, setSelectedStoryLine] = useState<string | null>(null);
+  const [storyData, setStoryData] = useState<LyricExplanation | null>(null);
+  const [isLoadingStory, setIsLoadingStory] = useState(false);
+  const [storyError, setStoryError] = useState('');
+
   useEffect(() => {
     setOffset(0);
     setSyncMode(false);
     setOffsetNote('');
+    setTranslatedCache(null);
+    setTranslationError('');
+    setSelectedStoryLine(null);
+    setStoryData(null);
   }, [currentSong.id]);
-  const time = smoothTime + offset;
 
-  const lines = useMemo(() => parseSyncedLyrics(lyrics?.syncedLyrics), [lyrics?.syncedLyrics]);
+  const baseLines = useMemo(() => parseSyncedLyrics(lyrics?.syncedLyrics), [lyrics?.syncedLyrics]);
+  const lines = useMemo(() => {
+    const rawTrans = translatedCache || lyrics?.translatedLyrics;
+    return mergeTranslatedLyrics(baseLines, rawTrans);
+  }, [baseLines, lyrics?.translatedLyrics, translatedCache]);
 
   const jamCode = useJamStore((s) => s.code);
   const [isKaraokeMode, setIsKaraokeMode] = useState(true);
   const [showResultModal, setShowResultModal] = useState(false);
   const [resultSummary, setResultSummary] = useState<KaraokeScoreSummary | null>(null);
+
+  const time = currentTime + offset;
 
   const scorer = useKaraokeScorer({
     songId: currentSong.id,
@@ -141,27 +164,44 @@ const KaraokeBody: React.FC = () => {
       });
     }
   }, [scorer.totalScore, jamCode, currentSong.id]);
-
-  let activeIndex = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (time >= lines[i].time) {
-      activeIndex = i;
-      break;
-    }
-  }
   const lineEnd = (i: number) => Math.min(lines[i + 1]?.time ?? Infinity, lines[i].time + MAX_LINE_SECONDS);
-  const nextTime = lines[activeIndex + 1]?.time ?? (activeIndex === -1 ? lines[0]?.time : undefined);
-  const inBreak =
-    lines.length > 0 &&
-    nextTime !== undefined &&
-    (activeIndex === -1 || time >= lineEnd(activeIndex)) &&
-    nextTime - (activeIndex === -1 ? 0 : lineEnd(activeIndex)) >= BREAK_SECONDS;
-  const breakStart = activeIndex === -1 ? 0 : lineEnd(activeIndex);
-  const breakProgress = inBreak && nextTime !== undefined ? (time - breakStart) / (nextTime - breakStart) : 0;
+
+  // Only the line index, break state and dot count re-render; the fill sweep is written straight to the DOM.
+  const [{ activeIndex, inBreak, breakDots }, setView] = useState({ activeIndex: -1, inBreak: false, breakDots: 0 });
+  const smoothTimeRef = useRef(usePlayerStore.getState().currentTime);
+  const fillRef = useRef<HTMLDivElement | null>(null);
+  useSmoothClock((smoothTime) => {
+    smoothTimeRef.current = smoothTime;
+    const time = smoothTime + offset;
+    let index = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (time >= lines[i].time) {
+        index = i;
+        break;
+      }
+    }
+    const nextTime = lines[index + 1]?.time ?? (index === -1 ? lines[0]?.time : undefined);
+    const breakStart = index === -1 ? 0 : lineEnd(index);
+    const isBreak =
+      lines.length > 0 &&
+      nextTime !== undefined &&
+      (index === -1 || time >= breakStart) &&
+      nextTime - breakStart >= BREAK_SECONDS;
+    const dots = isBreak && nextTime !== undefined ? Math.min(3, Math.ceil(((time - breakStart) / (nextTime - breakStart)) * 3)) : 0;
+    setView((v) =>
+      v.activeIndex === index && v.inBreak === isBreak && v.breakDots === dots
+        ? v
+        : { activeIndex: index, inBreak: isBreak, breakDots: dots }
+    );
+    if (index >= 0 && !isBreak && fillRef.current) {
+      const progress = Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
+      fillRef.current.style.setProperty('--p', `${(progress * 100).toFixed(2)}%`);
+    }
+  });
 
   // Auto-scroll keeps the active line centred, but yields to the user for a few seconds after they scroll.
   const containerRef = useRef<HTMLDivElement>(null);
-  const activeLineRef = useRef<HTMLDivElement>(null);
+  const activeLineRef = useRef<HTMLDivElement | null>(null);
   const userScrollUntil = useRef(0);
   useEffect(() => {
     if (Date.now() < userScrollUntil.current) return;
@@ -173,11 +213,51 @@ const KaraokeBody: React.FC = () => {
 
   const onLineClick = (lineTime: number) => {
     if (syncMode) {
-      setOffset(Math.round((lineTime - smoothTime) * 4) / 4);
+      setOffset(Math.round((lineTime - smoothTimeRef.current) * 4) / 4);
       setSyncMode(false);
       setOffsetNote('');
     } else {
       seek(Math.max(0, lineTime - offset));
+    }
+  };
+
+  // Toggle "Dịch song song"
+  const toggleTranslation = async () => {
+    if (!showTranslation) {
+      setShowTranslation(true);
+      setTranslationError('');
+      const hasTranslation = lines.some((l) => Boolean(l.translation));
+      if (!hasTranslation && currentSong?.id) {
+        setIsTranslating(true);
+        try {
+          const res = await songService.translateLyrics(currentSong.id);
+          if (res?.translatedLyrics) {
+            setTranslatedCache(res.translatedLyrics);
+          }
+        } catch (err: any) {
+          setTranslationError(err.response?.data?.message || 'Không thể dịch lời bài hát.');
+        } finally {
+          setIsTranslating(false);
+        }
+      }
+    } else {
+      setShowTranslation(false);
+    }
+  };
+
+  // Handle opening AI Storytelling for a line
+  const handleOpenStory = async (lineText: string) => {
+    setSelectedStoryLine(lineText);
+    setStoryData(null);
+    setStoryError('');
+    setIsLoadingStory(true);
+    try {
+      const res = await songService.explainLyric(currentSong.id, lineText);
+      setStoryData(res);
+    } catch (err: any) {
+      setStoryError(err.response?.data?.message || 'Không thể giải mã câu hát.');
+    } finally {
+      setIsLoadingStory(false);
     }
   };
 
@@ -210,6 +290,39 @@ const KaraokeBody: React.FC = () => {
 
   return (
     <>
+      {/* Top action bar: Dịch song song & AI prompt */}
+      {lines.length > 0 && (
+        <div className="relative z-20 flex items-center justify-between px-6 py-2 max-w-3xl w-full mx-auto flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleTranslation}
+              disabled={isTranslating}
+              aria-pressed={showTranslation}
+              className={`px-3 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 active:scale-95 ${
+                showTranslation
+                  ? 'bg-amber-300 text-black border-amber-300 font-bold shadow-md'
+                  : 'border-white/15 text-white/80 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              {isTranslating ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-current" />
+              ) : (
+                <Languages className="w-3.5 h-3.5" />
+              )}
+              <span>{isTranslating ? 'Đang dịch lời…' : 'Dịch song song'}</span>
+            </button>
+            {translationError && (
+              <span className="text-[11px] text-red-300 truncate max-w-[200px]">{translationError}</span>
+            )}
+          </div>
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-white/60">
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>Bấm ✨ để Gemini kể chuyện & giải thích câu hát</span>
+          </div>
+        </div>
+      )}
+
+      {/* Karaoke Pitch Visualizer HUD */}
       {isKaraokeMode && lines.length > 0 && (
         <div className="w-full px-6 max-w-3xl mx-auto pt-1 flex-shrink-0 z-20">
           <KaraokePitchVisualizer
@@ -232,6 +345,7 @@ const KaraokeBody: React.FC = () => {
         </div>
       )}
 
+      {/* Main lyrics scroll area */}
       <div
         ref={containerRef}
         onWheel={onUserScroll}
@@ -260,13 +374,10 @@ const KaraokeBody: React.FC = () => {
             )}
           </div>
         ) : lines.length > 0 ? (
-          <div className="max-w-3xl w-full space-y-5 md:space-y-7 text-left py-[40vh]">
+          <div className="max-w-3xl w-full space-y-6 md:space-y-8 text-left py-[35vh]">
             {lines.map((line, idx) => {
               const isActive = idx === activeIndex && !inBreak;
               const isPassed = idx < activeIndex || (idx === activeIndex && inBreak);
-              const progress = isActive
-                ? Math.min(1, Math.max(0, (time - line.time) / Math.max(0.5, lineEnd(idx) - line.time)))
-                : isPassed ? 1 : 0;
               return (
                 <React.Fragment key={idx}>
                   {inBreak && idx === activeIndex + 1 && (
@@ -275,28 +386,76 @@ const KaraokeBody: React.FC = () => {
                         <span
                           key={d}
                           className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-white transition-opacity duration-300 animate-pulse"
-                          style={{ opacity: breakProgress > d / 3 ? 1 : 0.2 }}
+                          style={{ opacity: breakDots > d ? 1 : 0.2 }}
                         />
                       ))}
                     </div>
                   )}
                   <div
-                    ref={isActive ? activeLineRef : null}
-                    onClick={() => onLineClick(line.time)}
-                    className={`cursor-pointer origin-left font-extrabold leading-snug tracking-tight transition-all duration-300 text-2xl md:text-4xl ${
-                      syncMode ? 'hover:outline hover:outline-2 hover:outline-amber-300/70 rounded-lg ' : ''
-                    }${
-                      isActive ? 'scale-100 blur-0' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 blur-[1px] hover:opacity-80 hover:blur-0'
-                    }`}
-                    style={{
-                      backgroundImage: `linear-gradient(90deg, #ffffff ${progress * 100}%, rgba(255,255,255,0.35) ${progress * 100}%)`,
-                      WebkitBackgroundClip: 'text',
-                      backgroundClip: 'text',
-                      color: 'transparent',
-                      textShadow: isActive ? '0 0 24px rgba(255,255,255,0.25)' : undefined,
-                    }}
+                    ref={
+                      isActive
+                        ? (el) => {
+                            activeLineRef.current = el;
+                            fillRef.current = el;
+                          }
+                        : null
+                    }
+                    className="group relative flex items-start justify-between gap-3"
                   >
-                    {line.text}
+                    <div
+                      onClick={() => onLineClick(line.time)}
+                      className={`cursor-pointer origin-left font-extrabold leading-snug tracking-tight transition-[opacity,transform] duration-300 ease-out will-change-transform text-2xl md:text-4xl flex-1 ${
+                        syncMode ? 'hover:outline hover:outline-2 hover:outline-amber-300/70 rounded-lg ' : ''
+                      }${
+                        isActive ? 'scale-100' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 hover:opacity-80'
+                      }`}
+                      style={{
+                        // Active line: --p is driven per frame by useSmoothClock.
+                        ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
+                        backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
+                        WebkitBackgroundClip: 'text',
+                        backgroundClip: 'text',
+                        color: 'transparent',
+                      } as React.CSSProperties}
+                    >
+                      <div>{line.text}</div>
+                      {/* Parallel translated Vietnamese line */}
+                      {showTranslation && (
+                        <div
+                          className={`mt-1.5 font-medium tracking-normal transition-opacity duration-300 text-sm md:text-xl ${
+                            isActive
+                              ? 'text-amber-200 font-semibold opacity-100'
+                              : isPassed
+                              ? 'text-white/60 opacity-90'
+                              : 'text-white/40 opacity-70'
+                          }`}
+                          style={{
+                            WebkitTextFillColor: isActive ? '#fde68a' : 'rgba(255, 255, 255, 0.7)',
+                            color: isActive ? '#fde68a' : 'rgba(255, 255, 255, 0.7)',
+                          }}
+                        >
+                          {line.translation || (isTranslating ? 'Đang dịch…' : '')}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* AI Storytelling Button for this line */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenStory(line.text);
+                      }}
+                      title="Gemini kể chuyện & giải thích ý nghĩa câu hát"
+                      aria-label="Kể chuyện câu hát này"
+                      className={`flex-shrink-0 p-2 rounded-xl transition-all duration-200 active:scale-90 flex items-center gap-1.5 ${
+                        isActive
+                          ? 'opacity-100 bg-amber-400/20 text-amber-300 border border-amber-300/40 shadow-sm'
+                          : 'opacity-0 group-hover:opacity-100 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10'
+                      }`}
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-300" />
+                      <span className="hidden sm:inline text-xs font-semibold text-amber-200/90">Ý nghĩa</span>
+                    </button>
                   </div>
                 </React.Fragment>
               );
@@ -312,13 +471,13 @@ const KaraokeBody: React.FC = () => {
       {/* Bottom transport: play/pause, scrubber, sync offset */}
       <div className="relative z-10 flex-shrink-0 px-6 pt-3 pb-[calc(env(safe-area-inset-bottom)+1rem)] max-w-3xl w-full mx-auto space-y-3">
         <div className="flex items-center gap-3 text-[11px] font-mono text-text-muted">
-          <span className="w-10 text-right">{formatDuration(Math.floor(smoothTime))}</span>
+          <span className="w-10 text-right">{formatDuration(Math.floor(currentTime))}</span>
           <input
             type="range"
             min={0}
             max={duration || 1}
             step={0.5}
-            value={Math.min(smoothTime, duration || 1)}
+            value={Math.min(currentTime, duration || 1)}
             onChange={(e) => seek(parseFloat(e.target.value))}
             aria-label="Tua bài hát"
             className="flex-1 h-1 accent-white cursor-pointer"
@@ -408,6 +567,7 @@ const KaraokeBody: React.FC = () => {
         </div>
       </div>
 
+<<<<<<< HEAD
       <KaraokeResultModal
         isOpen={showResultModal}
         onClose={() => setShowResultModal(false)}
@@ -447,6 +607,130 @@ const KaraokeBody: React.FC = () => {
         }
         isInJam={!!jamCode}
       />
+=======
+      {/* AI Storytelling Modal / Bottom Sheet */}
+      <AnimatePresence>
+        {selectedStoryLine && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-md flex items-end sm:items-center justify-center p-0 sm:p-4"
+            onClick={() => setSelectedStoryLine(null)}
+          >
+            <motion.div
+              initial={{ y: '100%', opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: '100%', opacity: 0 }}
+              transition={{ type: 'spring', damping: 26, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xl bg-[#12131d] border border-white/15 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 border-b border-white/10 bg-white/[0.02]">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-400 to-purple-500 flex items-center justify-center text-black shadow-md">
+                    <Sparkles className="w-5 h-5 fill-current" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-base flex items-center gap-2">
+                      Kể chuyện câu hát
+                      <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                        Gemini AI
+                      </span>
+                    </h3>
+                    <p className="text-xs text-text-muted truncate max-w-[280px]">
+                      {currentSong.title} • {currentSong.artist?.name}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedStoryLine(null)}
+                  className="p-2 rounded-full hover:bg-white/10 text-text-muted hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Selected Lyric Box */}
+              <div className="p-5 pb-2">
+                <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 border-l-4 border-l-amber-400">
+                  <p className="text-[11px] uppercase font-bold tracking-wider text-amber-300 mb-1">
+                    Câu hát đang nghe
+                  </p>
+                  <p className="text-lg md:text-xl font-bold text-white italic leading-snug">
+                    “{selectedStoryLine}”
+                  </p>
+                </div>
+              </div>
+
+              {/* Story Content Area */}
+              <div className="flex-1 overflow-y-auto px-5 pb-6 space-y-3.5">
+                {isLoadingStory ? (
+                  <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
+                    <div className="relative">
+                      <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                      <Sparkles className="w-4 h-4 text-purple-400 absolute -top-1 -right-1 animate-pulse" />
+                    </div>
+                    <p className="text-sm font-semibold text-white/90">
+                      Gemini đang giải mã ý nghĩa & cảm xúc câu hát…
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      Đang phân tích ca từ trong toàn bộ bối cảnh bài hát
+                    </p>
+                  </div>
+                ) : storyError ? (
+                  <div className="py-8 text-center space-y-3">
+                    <p className="text-sm text-red-300">{storyError}</p>
+                    <button
+                      onClick={() => handleOpenStory(selectedStoryLine)}
+                      className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-xs font-semibold text-white"
+                    >
+                      Thử lại
+                    </button>
+                  </div>
+                ) : storyData ? (
+                  <div className="space-y-3.5 pt-1">
+                    {/* Meaning */}
+                    <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1.5">
+                      <div className="flex items-center gap-2 text-amber-300 font-semibold text-sm">
+                        <span>💡</span>
+                        <h4>Ý nghĩa ca từ</h4>
+                      </div>
+                      <p className="text-sm text-white/85 leading-relaxed whitespace-pre-line">
+                        {storyData.meaning}
+                      </p>
+                    </div>
+
+                    {/* Context */}
+                    <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1.5">
+                      <div className="flex items-center gap-2 text-sky-300 font-semibold text-sm">
+                        <span>📖</span>
+                        <h4>Bối cảnh bài hát</h4>
+                      </div>
+                      <p className="text-sm text-white/85 leading-relaxed whitespace-pre-line">
+                        {storyData.context}
+                      </p>
+                    </div>
+
+                    {/* Emotion */}
+                    <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1.5">
+                      <div className="flex items-center gap-2 text-rose-300 font-semibold text-sm">
+                        <span>🎭</span>
+                        <h4>Cảm xúc & Thông điệp</h4>
+                      </div>
+                      <p className="text-sm text-white/85 leading-relaxed whitespace-pre-line">
+                        {storyData.emotion}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+>>>>>>> upstream/main
     </>
   );
 };
@@ -473,14 +757,13 @@ export const LyricsModal: React.FC = () => {
       transition={{ type: 'spring', damping: 30, stiffness: 300 }}
       className="fixed inset-0 z-[60] bg-[#07080c] flex flex-col overflow-hidden"
     >
-      {/* Living background: the cover art, heavily blurred and slowly drifting */}
+      {/* Background: the cover art, heavily blurred. Kept static: animating a 90px blur
+          over the whole screen re-filters every frame and starves the lyrics animation. */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <motion.img
+        <img
           src={currentSong.coverUrl}
           alt=""
           className="absolute w-[160%] h-[160%] -left-[30%] -top-[30%] object-cover blur-[90px] opacity-60 saturate-150"
-          animate={{ rotate: [0, 8, -6, 0], scale: [1, 1.08, 1.03, 1] }}
-          transition={{ duration: 40, repeat: Infinity, ease: 'easeInOut' }}
         />
         <div className="absolute inset-0 bg-black/45" />
       </div>

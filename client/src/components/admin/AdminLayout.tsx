@@ -12,8 +12,10 @@ import {
 import { useAuthStore } from '../../store/authStore.js';
 import { BottomPlayer } from '../player/BottomPlayer.js';
 import { usePlayerStore } from '../../store/playerStore.js';
+import { usePageTransition } from '../../utils/usePageTransition.js';
 
 export const AdminLayout: React.FC = () => {
+  const pageRef = usePageTransition<HTMLDivElement>();
   const { user } = useAuthStore();
   const { currentSong } = usePlayerStore();
   const navigate = useNavigate();
@@ -131,7 +133,9 @@ export const AdminLayout: React.FC = () => {
             : 'pb-[calc(56px+env(safe-area-inset-bottom)+1rem)] md:pb-24'
         }`}
       >
-        <Outlet />
+        <div ref={pageRef}>
+          <Outlet />
+        </div>
       </main>
 
       {/* Persistent Bottom Player */}

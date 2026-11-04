@@ -6,6 +6,7 @@ import {
   autoLyricsForSong,
   createMediaUploadUrl,
   lookupLyrics,
+  aiTranscribeLyrics,
   createSong,
   deleteAlbum,
   deleteArtist,
@@ -46,6 +47,7 @@ router.get('/youtube-info', getYoutubeInfo);
 router.post('/songs/check-duplicates', checkSongDuplicates);
 router.post('/media/upload-url', uploadRateLimiter, createMediaUploadUrl);
 router.get('/lyrics/lookup', searchRateLimiter, lookupLyrics);
+router.post('/lyrics/ai-transcribe', uploadRateLimiter, upload.fields([{ name: 'audioFile', maxCount: 1 }]), aiTranscribeLyrics);
 router.post('/songs/:id/auto-lyrics', searchRateLimiter, autoLyricsForSong);
 router.post(
   '/songs/import-song',

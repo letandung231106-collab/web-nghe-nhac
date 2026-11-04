@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import api from '../services/api.js';
 import { Song } from '../types/index.js';
 import { useAudioFxStore } from './audioFxStore.js';
-import { usePlayerStore } from './playerStore.js';
+import { setJamGuestLock, usePlayerStore } from './playerStore.js';
 import { useAuthStore } from './authStore.js';
 
 export interface JamMemberInfo {
@@ -222,18 +222,21 @@ export const useJamStore = create<JamState>((set, get) => ({
       };
     });
     useAudioFxStore.getState().setCrossfadeBlocked(!snap.isHost);
+    setJamGuestLock(!snap.isHost);
   },
 
   markEnded: () => {
     saveCode(null);
     set({ ended: true, roomPlaying: false });
     useAudioFxStore.getState().setCrossfadeBlocked(false);
+    setJamGuestLock(false);
   },
 
   reset: () => {
     saveCode(null);
     set({ code: null, ...empty });
     useAudioFxStore.getState().setCrossfadeBlocked(false);
+    setJamGuestLock(false);
   },
 }));
 

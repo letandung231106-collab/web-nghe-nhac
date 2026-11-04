@@ -1,5 +1,5 @@
 import api from './api.js';
-import { ApiResponse, PaginatedResult, Song } from '../types/index.js';
+import { ApiResponse, PaginatedResult, Song, LyricExplanation, SyncedLyricLine } from '../types/index.js';
 
 export interface SongRating {
   id: string;
@@ -123,5 +123,27 @@ export const songService = {
     });
     return res.data.data;
   },
-};
 
+  async translateLyrics(id: string) {
+    const res = await api.post<
+      ApiResponse<{
+        songId: string;
+        translatedLyrics: SyncedLyricLine[];
+        fromCache: boolean;
+      }>
+    >(`/songs/${id}/lyrics/translate`);
+    return res.data.data;
+  },
+
+  async explainLyric(id: string, lineText: string) {
+    const res = await api.post<
+      ApiResponse<
+        LyricExplanation & {
+          songId: string;
+          lineText: string;
+        }
+      >
+    >(`/songs/${id}/lyrics/explain`, { lineText });
+    return res.data.data;
+  },
+};
