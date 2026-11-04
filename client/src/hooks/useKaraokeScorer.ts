@@ -7,6 +7,7 @@ import {
   pitchDistanceInSemitones,
   TargetMelodyNote,
 } from '../utils/pitchDetector.js';
+import { karaokeAudioEngine } from '../utils/vocalRemover.js';
 
 export type KaraokeVerdictType = 'PERFECT' | 'GOOD' | 'MISS';
 
@@ -74,6 +75,14 @@ export const useKaraokeScorer = ({
   const [missCount, setMissCount] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
 
+  // Chế độ "Chỉ cần Beat (Tách giọng ca sĩ)" & "Hát tới đâu lời chạy tới đó"
+  const [isBeatOnly, setIsBeatOnly] = useState(false);
+  const [isVoicePacing, setIsVoicePacing] = useState(true);
+  const [voiceProgress, setVoiceProgress] = useState(0);
+  const [sungWordIndex, setSungWordIndex] = useState(-1);
+  const voiceProgressRef = useRef<number>(0);
+  const lastFrameTimeRef = useRef<number>(0);
+
   // Sinh danh sách nốt giai điệu mục tiêu cho bài hát
   const lineMelodies = useMemo<LineMelody[]>(() => {
     if (!songId || lines.length === 0) return [];
@@ -94,7 +103,21 @@ export const useKaraokeScorer = ({
     perfectFrames: number;
   }>({ voicedFrames: 0, hitFrames: 0, perfectFrames: 0 });
 
-  // Khởi động microphone và Web Audio API
+  // Bật / tắt chế độ Chỉ cần Beat (Vocal Remover)
+  const toggleBeatMode = useCallback((forceState?: boolean) => {
+    setIsBeatOnly((prev) => {
+      const next = typeof forceState === 'boolean' ? forceState : !prev;
+      karaokeAudioEngine.setBeatOnly(next);
+      return next;
+    });
+  }, []);
+
+  // Bật / tắt chế độ lời chạy theo giọng hát
+  const toggleVoicePacing = useCallback(() => {
+    setIsVoicePacing((prev) => !prev);
+  }, []);
+
+  // Khởi động microphone và Web Audio API (tự động bật Beat-only & Voice Pacing)
   const startMic = useCallback(async () => {
     try {
       setMicError(null);
@@ -125,6 +148,11 @@ export const useKaraokeScorer = ({
       mediaStreamRef.current = stream;
       analyserRef.current = analyser;
       setIsMicOn(true);
+
+      // Khi bấm bắt đầu hát Karaoke -> Tự động tách lời ca sĩ (chỉ giữ Beat) & bật bám lời theo giọng
+      karaokeAudioEngine.setBeatOnly(true);
+      setIsBeatOnly(true);
+      setIsVoicePacing(true);
     } catch (err: any) {
       console.error('Lỗi truy cập micro:', err);
       const msg =
@@ -153,6 +181,11 @@ export const useKaraokeScorer = ({
     setIsMicOn(false);
     setLivePitch(null);
     setCurrentNote(null);
+    voiceProgressRef.current = 0;
+    setVoiceProgress(0);
+    setSungWordIndex(-1);
+    karaokeAudioEngine.setBeatOnly(false);
+    setIsBeatOnly(false);
   }, []);
 
   // Reset điểm số
@@ -271,32 +304,57 @@ export const useKaraokeScorer = ({
 
       setCurrentNote(target);
 
-      // Nếu chuyển từ dòng này sang dòng khác -> chấm điểm dòng trước
-      if (
-        currentLineIndexRef.current !== -1 &&
-        currentLineIndexRef.current !== activeLineIdx &&
-        activeLineIdx !== -1
-      ) {
-        evaluateLine(currentLineIndexRef.current);
-      }
-      currentLineIndexRef.current = activeLineIdx;
+      const now = performance.now();
+      const dt = lastFrameTimeRef.current > 0 ? Math.min(0.05, (now - lastFrameTimeRef.current) / 1000) : 1 / 60;
+      lastFrameTimeRef.current = now;
 
-      // Nếu người dùng đang hát và có nốt mục tiêu -> thu thập frame thống kê
-      if (activeLineIdx !== -1 && pitch?.isVoiced && target) {
-        lineStatsRef.current.voicedFrames++;
-        const diff = pitchDistanceInSemitones(pitch.midi, target.midi);
-
-        if (diff <= 0.6) {
-          lineStatsRef.current.perfectFrames++;
-          lineStatsRef.current.hitFrames++;
-        } else if (diff <= 1.4) {
-          lineStatsRef.current.hitFrames++;
+      // Nếu chuyển từ dòng này sang dòng khác -> chấm điểm dòng trước & reset tiến trình chữ
+      if (currentLineIndexRef.current !== activeLineIdx) {
+        if (currentLineIndexRef.current !== -1 && activeLineIdx !== -1) {
+          evaluateLine(currentLineIndexRef.current);
         }
+        voiceProgressRef.current = 0;
+        setVoiceProgress(0);
+        setSungWordIndex(-1);
+        currentLineIndexRef.current = activeLineIdx;
+      }
+
+      // Nếu người dùng đang hát -> thu thập frame thống kê & đẩy chữ chạy theo giọng hát
+      if (activeLineIdx !== -1) {
+        const activeLine = lineMelodies[activeLineIdx];
+        const totalWords = Math.max(1, activeLine.notes.length);
+
+        if (pitch?.isVoiced) {
+          let speedBoost = 1.0;
+          if (target) {
+            lineStatsRef.current.voicedFrames++;
+            const diff = pitchDistanceInSemitones(pitch.midi, target.midi);
+
+            if (diff <= 0.6) {
+              lineStatsRef.current.perfectFrames++;
+              lineStatsRef.current.hitFrames++;
+              speedBoost = 1.15;
+            } else if (diff <= 1.4) {
+              lineStatsRef.current.hitFrames++;
+              speedBoost = 1.08;
+            }
+          }
+
+          // Tính tốc độ chạy chữ dựa trên thời lượng câu hát khi người dùng phát ra âm thanh
+          const effectiveLineDuration = Math.max(1.2, (activeLine.endSec - activeLine.startSec) * 0.72);
+          const step = (dt / effectiveLineDuration) * speedBoost;
+          const nextProgress = Math.min(1, voiceProgressRef.current + step);
+          voiceProgressRef.current = nextProgress;
+          setVoiceProgress(nextProgress);
+          setSungWordIndex(Math.min(totalWords - 1, Math.floor(nextProgress * totalWords)));
+        }
+        // Khi người dùng ngưng hát (!pitch?.isVoiced), voiceProgressRef giữ nguyên vị trí hiện tại!
       }
 
       animFrameRef.current = requestAnimationFrame(tick);
     };
 
+    lastFrameTimeRef.current = performance.now();
     animFrameRef.current = requestAnimationFrame(tick);
 
     return () => {
@@ -384,5 +442,12 @@ export const useKaraokeScorer = ({
     isFinished,
     finishSession,
     lineMelodies,
+    isBeatOnly,
+    toggleBeatMode,
+    isVoicePacing,
+    toggleVoicePacing,
+    voiceProgress,
+    voiceProgressRef,
+    sungWordIndex,
   };
 };

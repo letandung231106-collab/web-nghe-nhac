@@ -149,6 +149,18 @@ const KaraokeBody: React.FC = () => {
     },
   });
 
+  // Tự động bật chế độ Chỉ cần Beat (tách giọng ca sĩ) khi mở màn hình Karaoke
+  useEffect(() => {
+    if (isKaraokeMode) {
+      scorer.toggleBeatMode(true);
+    } else {
+      scorer.toggleBeatMode(false);
+    }
+    return () => {
+      scorer.toggleBeatMode(false);
+    };
+  }, [isKaraokeMode, currentSong.id]);
+
   // Tự động đồng bộ điểm số realtime lên phòng Jam khi đang hát
   useEffect(() => {
     if (jamCode && scorer.totalScore > 0 && scorer.isMicOn) {
@@ -194,7 +206,10 @@ const KaraokeBody: React.FC = () => {
         : { activeIndex: index, inBreak: isBreak, breakDots: dots }
     );
     if (index >= 0 && !isBreak && fillRef.current) {
-      const progress = Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
+      const progress =
+        scorer.isMicOn && scorer.isVoicePacing
+          ? scorer.voiceProgressRef.current
+          : Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
       fillRef.current.style.setProperty('--p', `${(progress * 100).toFixed(2)}%`);
     }
   });
@@ -336,6 +351,11 @@ const KaraokeBody: React.FC = () => {
             currentRank={scorer.currentRank}
             activeLineMelody={activeIndex !== -1 ? scorer.lineMelodies[activeIndex] : null}
             currentTime={time}
+            isBeatOnly={scorer.isBeatOnly}
+            onToggleBeatMode={() => scorer.toggleBeatMode()}
+            isVoicePacing={scorer.isVoicePacing}
+            onToggleVoicePacing={scorer.toggleVoicePacing}
+            sungWordIndex={scorer.sungWordIndex}
           />
           {scorer.micError && (
             <p className="text-xs text-rose-400 text-center -mt-2 mb-2 bg-rose-500/10 border border-rose-500/20 rounded-xl p-2">
@@ -409,16 +429,63 @@ const KaraokeBody: React.FC = () => {
                       }${
                         isActive ? 'scale-100' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 hover:opacity-80'
                       }`}
-                      style={{
-                        // Active line: --p is driven per frame by useSmoothClock.
-                        ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
-                        backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
-                        WebkitBackgroundClip: 'text',
-                        backgroundClip: 'text',
-                        color: 'transparent',
-                      } as React.CSSProperties}
+                      style={
+                        isActive && scorer.isMicOn && scorer.isVoicePacing
+                          ? undefined
+                          : ({
+                              // Active line: --p is driven per frame by useSmoothClock.
+                              ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
+                              backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
+                              WebkitBackgroundClip: 'text',
+                              backgroundClip: 'text',
+                              color: 'transparent',
+                            } as React.CSSProperties)
+                      }
                     >
-                      <div>{line.text}</div>
+                      {isActive && scorer.isMicOn && scorer.isVoicePacing ? (
+                        <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                          {line.text
+                            .split(/\s+/)
+                            .filter(Boolean)
+                            .map((word, wIdx, arr) => {
+                              const totalW = Math.max(1, arr.length);
+                              const wordStart = wIdx / totalW;
+                              const wordEnd = (wIdx + 1) / totalW;
+                              const vp = scorer.voiceProgress;
+                              const wordFill =
+                                vp >= wordEnd
+                                  ? 100
+                                  : vp <= wordStart
+                                  ? 0
+                                  : ((vp - wordStart) / (wordEnd - wordStart)) * 100;
+                              const isCurrentWord =
+                                vp >= wordStart && vp < wordEnd && Boolean(scorer.livePitch?.isVoiced);
+                              return (
+                                <span
+                                  key={wIdx}
+                                  className={`inline-block transition-transform duration-100 ${
+                                    isCurrentWord
+                                      ? 'scale-105 drop-shadow-[0_0_12px_rgba(52,211,153,0.85)]'
+                                      : ''
+                                  }`}
+                                  style={{
+                                    backgroundImage: `linear-gradient(90deg, #34d399 ${wordFill.toFixed(
+                                      1
+                                    )}%, rgba(255,255,255,0.32) ${wordFill.toFixed(1)}%)`,
+                                    WebkitBackgroundClip: 'text',
+                                    backgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    color: 'transparent',
+                                  }}
+                                >
+                                  {word}
+                                </span>
+                              );
+                            })}
+                        </div>
+                      ) : (
+                        <div>{line.text}</div>
+                      )}
                       {/* Parallel translated Vietnamese line */}
                       {showTranslation && (
                         <div

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, Flame, Award, Volume2, Sparkles } from 'lucide-react';
+import { Mic, MicOff, Flame, Volume2, Sparkles, Headphones, AudioWaveform } from 'lucide-react';
 import {
   DetectedPitch,
   LineMelody,
@@ -23,6 +23,11 @@ interface KaraokePitchVisualizerProps {
   currentRank: KaraokeRank;
   activeLineMelody: LineMelody | null;
   currentTime: number;
+  isBeatOnly?: boolean;
+  onToggleBeatMode?: () => void;
+  isVoicePacing?: boolean;
+  onToggleVoicePacing?: () => void;
+  sungWordIndex?: number;
 }
 
 const RANK_COLORS: Record<KaraokeRank, { bg: string; text: string; glow: string }> = {
@@ -45,6 +50,11 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
   currentRank,
   activeLineMelody,
   currentTime,
+  isBeatOnly = false,
+  onToggleBeatMode,
+  isVoicePacing = true,
+  onToggleVoicePacing,
+  sungWordIndex = -1,
 }) => {
   const rankStyle = RANK_COLORS[currentRank] || RANK_COLORS.C;
 
@@ -75,12 +85,12 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
       {/* Background Neon Grid / Glow */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-500/10 via-transparent to-transparent" />
 
-      {/* Top HUD: Score, Combo, Rank, Mic Toggle */}
-      <div className="relative z-10 flex items-center justify-between gap-3 pb-3 border-b border-white/10">
-        <div className="flex items-center gap-3">
+      {/* Top HUD: Score, Combo, Rank, Mic Toggle, Beat Mode, Voice Pacing */}
+      <div className="relative z-10 flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/10">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onToggleMic}
-            className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 transition-all active:scale-95 ${
+            className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 ${
               isMicOn
                 ? 'bg-emerald-400 text-black shadow-[0_0_15px_rgba(52,211,153,0.5)]'
                 : 'bg-white/10 text-white hover:bg-white/20'
@@ -89,20 +99,50 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
             {isMicOn ? (
               <>
                 <Mic className="w-3.5 h-3.5 animate-pulse" />
-                <span>Micro Bật</span>
+                <span>Đang Hát</span>
               </>
             ) : (
               <>
                 <MicOff className="w-3.5 h-3.5 text-rose-300" />
-                <span>Bật Micro Hát</span>
+                <span>Bắt Đầu Hát</span>
               </>
             )}
           </button>
 
+          {onToggleBeatMode && (
+            <button
+              onClick={onToggleBeatMode}
+              title={isBeatOnly ? 'Đang tắt giọng ca sĩ gốc, chỉ phát nhạc Beat' : 'Bấm để tách giọng ca sĩ, chỉ giữ nhạc Beat'}
+              className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 border transition-all active:scale-95 ${
+                isBeatOnly
+                  ? 'bg-cyan-400/20 text-cyan-200 border-cyan-400/50 shadow-[0_0_12px_rgba(34,211,238,0.35)]'
+                  : 'bg-white/5 text-white/70 border-white/15 hover:bg-white/15 hover:text-white'
+              }`}
+            >
+              <Headphones className="w-3.5 h-3.5" />
+              <span>{isBeatOnly ? 'Chỉ Beat (Tách lời)' : 'Beat + Lời gốc'}</span>
+            </button>
+          )}
+
+          {isMicOn && onToggleVoicePacing && (
+            <button
+              onClick={onToggleVoicePacing}
+              title="Khi bật: bạn hát tới đâu chữ sẽ sáng chạy tới đó"
+              className={`px-2.5 py-1.5 rounded-full text-[11px] font-semibold flex items-center gap-1.5 border transition-all active:scale-95 ${
+                isVoicePacing
+                  ? 'bg-amber-400/20 text-amber-200 border-amber-400/40'
+                  : 'bg-white/5 text-white/60 border-white/10 hover:text-white'
+              }`}
+            >
+              <AudioWaveform className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{isVoicePacing ? 'Chữ chạy theo giọng' : 'Chữ chạy tự động'}</span>
+            </button>
+          )}
+
           {isMicOn && (
             <div className="flex items-center gap-1.5 text-xs font-mono text-emerald-300">
               <Volume2 className="w-3.5 h-3.5" />
-              <div className="w-12 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className="w-10 h-1.5 rounded-full bg-white/10 overflow-hidden">
                 <div
                   className="h-full bg-emerald-400 transition-all duration-75"
                   style={{ width: `${Math.min(100, (livePitch?.volume || 0) * 100)}%` }}
@@ -163,11 +203,15 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
         {/* Target Note Blocks of Current Line */}
         {activeLineMelody && (
           <div className="absolute inset-0 px-4 py-2 pointer-events-none">
-            {activeLineMelody.notes.map((note) => {
+            {activeLineMelody.notes.map((note, nIdx) => {
               const isCurrent =
-                currentTime >= note.startSec &&
-                currentTime < note.startSec + note.durationSec;
-              const isPassed = currentTime >= note.startSec + note.durationSec;
+                isMicOn && isVoicePacing
+                  ? nIdx === Math.max(0, sungWordIndex)
+                  : currentTime >= note.startSec && currentTime < note.startSec + note.durationSec;
+              const isPassed =
+                isMicOn && isVoicePacing
+                  ? nIdx < sungWordIndex
+                  : currentTime >= note.startSec + note.durationSec;
               const yPercent = midiToPercentY(note.midi);
 
               // Tọa độ X tương đối trong dòng
@@ -185,7 +229,7 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
                         ? 'bg-gradient-to-r from-emerald-400 to-cyan-300 text-black shadow-[0_0_15px_rgba(52,211,153,0.8)] scale-105 z-20'
                         : 'bg-gradient-to-r from-amber-400 to-rose-400 text-black shadow-[0_0_10px_rgba(251,191,36,0.5)] z-20'
                       : isPassed
-                      ? 'bg-white/20 text-white/50'
+                      ? 'bg-emerald-400/25 text-emerald-200/70'
                       : 'bg-white/10 text-white/70 border border-white/10'
                   }`}
                   style={{
@@ -233,8 +277,8 @@ export const KaraokePitchVisualizer: React.FC<KaraokePitchVisualizerProps> = ({
         {/* Center Prompt when Mic is Off */}
         {!isMicOn && (
           <div className="absolute inset-0 flex items-center justify-center text-center p-4 bg-black/40 backdrop-blur-sm">
-            <p className="text-xs text-white/70">
-              🎤 Bật micro để app đo cao độ giọng hát và chấm điểm từng câu theo thời gian thực!
+            <p className="text-xs text-white/80">
+              🎤 Bấm <strong>Bắt Đầu Hát</strong> để tự động tách giọng ca sĩ (chỉ giữ Beat) và lời sẽ sáng chạy theo đúng giọng hát của bạn!
             </p>
           </div>
         )}
