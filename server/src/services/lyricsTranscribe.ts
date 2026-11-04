@@ -51,13 +51,13 @@ const finish = (lines: { time: number; text: string }[], engine: 'whisper' | 'ge
 /** Whisper (precise word timing) for audio files when GROQ_API_KEY is set; Gemini for YouTube links or as fallback. */
 export async function transcribeLyrics(
   source: TranscribeSource,
-  hint: { title?: string; artist?: string; lyrics?: string }
+  hint: { title?: string; artist?: string; lyrics?: string; forceAi?: boolean }
 ) {
-  // Published lyrics beat anything heard from the audio: use LRCLIB's synced lines as-is,
+  // Published lyrics beat anything heard from the audio: use LRCLIB's synced lines as-is (unless forceAi is requested),
   // or its plain text as the reference the audio is aligned to.
   if (!hint.lyrics?.trim() && hint.title) {
     const match = await findLyrics({ title: hint.title, artistName: hint.artist || '' });
-    if (match?.syncedLyrics) return { plainLyrics: match.plainLyrics, syncedLyrics: match.syncedLyrics, engine: 'lrclib' as const };
+    if (match?.syncedLyrics && !hint.forceAi) return { plainLyrics: match.plainLyrics, syncedLyrics: match.syncedLyrics, engine: 'lrclib' as const };
     if (match?.plainLyrics) hint = { ...hint, lyrics: match.plainLyrics };
   }
   if (source.kind === 'audio' && whisperAvailable()) {
