@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { findLyrics } from './lyricsLookup.js';
 import { whisperAvailable, whisperTranscribe, alignLines, segmentLines } from './lyricsWhisper.js';
 
 // Gemini listens to the recording and writes time-synced LRC. It accepts a YouTube URL directly;
@@ -41,7 +42,7 @@ async function listFlashModels(apiKey: string): Promise<string[]> {
   }
 }
 
-const finish = (lines: { time: number; text: string }[], engine: 'whisper' | 'gemini') => ({
+const finish = (lines: { time: number; text: string }[], engine: 'whisper' | 'gemini' | 'lrclib') => ({
   plainLyrics: lines.map((l) => l.text).join('\n'),
   syncedLyrics: toLrc(lines),
   engine,
@@ -52,9 +53,17 @@ export async function transcribeLyrics(
   source: TranscribeSource,
   hint: { title?: string; artist?: string; lyrics?: string }
 ) {
+  // Published lyrics beat anything heard from the audio: use LRCLIB's synced lines as-is,
+  // or its plain text as the reference the audio is aligned to.
+  if (!hint.lyrics?.trim() && hint.title) {
+    const match = await findLyrics({ title: hint.title, artistName: hint.artist || '' });
+    if (match?.syncedLyrics) return { plainLyrics: match.plainLyrics, syncedLyrics: match.syncedLyrics, engine: 'lrclib' as const };
+    if (match?.plainLyrics) hint = { ...hint, lyrics: match.plainLyrics };
+  }
   if (source.kind === 'audio' && whisperAvailable()) {
     try {
-      const { words, segments } = await whisperTranscribe(source.data, source.mimeType);
+      const vietnamese = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(`${hint.title} ${hint.artist} ${hint.lyrics}`);
+      const { words, segments } = await whisperTranscribe(source.data, source.mimeType, vietnamese ? 'vi' : undefined);
       const reference = (hint.lyrics || '').split('\n').map((l) => l.trim()).filter(Boolean);
       const lines = (reference.length ? alignLines(reference, words) : null) ?? segmentLines(segments);
       if (lines.length) return finish(lines, 'whisper');

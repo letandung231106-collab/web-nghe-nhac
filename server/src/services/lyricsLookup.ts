@@ -45,6 +45,13 @@ export const cleanTitle = (title: string, artist = '') => {
     if (isArtist(parts[0])) t = parts[1];
     else if (isArtist(parts[1])) t = parts[0];
   }
+  // Unbracketed tags ("... Official Music Video") and an artist name glued to the front with no dash ("Hngle Tìm em").
+  t = t.replace(/\s+(official\s+)?(music\s+video|lyrics?\s+video|mv|audio|visuali[sz]er)\s*$/i, '').trim();
+  for (const name of splitArtists(artist)) {
+    const words = t.split(/\s+/);
+    const n = name.split(/\s+/).length;
+    if (words.length > n && normalize(words.slice(0, n).join(' ')) === normalize(name)) { t = words.slice(n).join(' '); break; }
+  }
   return t.trim() || title.trim();
 };
 
@@ -73,10 +80,16 @@ export const pickBest = (records: LrclibRecord[], title: string, artist: string,
 };
 
 const search = async (params: Record<string, string>): Promise<LrclibRecord[]> => {
-  const response = await fetch(`${LRCLIB}/search?${new URLSearchParams(params)}`, {
+  const get = () => fetch(`${LRCLIB}/search?${new URLSearchParams(params)}`, {
     headers: { 'user-agent': USER_AGENT },
     signal: AbortSignal.timeout(6000),
   });
+  let response = await get();
+  // LRCLIB answers 503 "ServerOverloaded" in bursts; one short retry usually gets through.
+  if (response.status === 503 || response.status === 429) {
+    await new Promise((r) => setTimeout(r, 1500));
+    response = await get();
+  }
   if (!response.ok) return [];
   const data = await response.json();
   return Array.isArray(data) ? data : [];
