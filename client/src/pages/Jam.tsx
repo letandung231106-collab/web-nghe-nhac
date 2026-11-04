@@ -4,6 +4,7 @@ import { Users, Copy, Check, LogOut, Crown, Music2, Plus, Radio, Play, ListPlus,
 import { QrShareModal, QrScanModal } from '../components/jam/JamQr.js';
 import { useJamStore, useQuizMask } from '../store/jamStore.js';
 import { QuizPanel } from '../components/jam/QuizPanel.js';
+import { JamKaraokeLeaderboard } from '../components/jam/JamKaraokeLeaderboard.js';
 import { SongPicker } from '../components/jam/SongPicker.js';
 import { useAuthStore } from '../store/authStore.js';
 import { usePlayerStore, useCurrentSong, useIsPlaying } from '../store/playerStore.js';
@@ -254,6 +255,8 @@ const Room: React.FC<{ code: string }> = ({ code }) => {
         </div>
 
         <QuizPanel />
+
+        <JamKaraokeLeaderboard />
 
         <RoomMusicBox isHost={isHost} />
 

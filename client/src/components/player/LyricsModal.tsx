@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Music2, Play, Pause, Minus, Plus, Loader2, Search, Sparkles, Languages } from 'lucide-react';
+import { X, Music2, Play, Pause, Minus, Plus, Loader2, Search, Sparkles, Languages, Mic, Trophy } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { usePlayerStore, useCurrentSong, useIsPlaying } from '../../store/playerStore.js';
-import { useQuizMask } from '../../store/jamStore.js';
+import { useQuizMask, useJamStore } from '../../store/jamStore.js';
 import { parseSyncedLyrics, toShiftedLrc, mergeTranslatedLyrics } from '../../utils/lyrics.js';
 import { songService } from '../../services/song.service.js';
 import { QUERY_KEYS, queryClient } from '../../services/queryClient.js';
@@ -11,6 +11,9 @@ import { adminService } from '../../services/admin.service.js';
 import { useAuthStore } from '../../store/authStore.js';
 import { Lyrics, LyricExplanation, SyncedLyricLine } from '../../types/index.js';
 import { formatDuration } from '../../utils/format.js';
+import { KaraokePitchVisualizer } from '../karaoke/KaraokePitchVisualizer.js';
+import { KaraokeResultModal } from '../karaoke/KaraokeResultModal.js';
+import { useKaraokeScorer, KaraokeScoreSummary } from '../../hooks/useKaraokeScorer.js';
 
 // A line with no successor (or a long instrumental gap) is considered sung for at most this long.
 const MAX_LINE_SECONDS = 6;
@@ -115,6 +118,64 @@ const KaraokeBody: React.FC = () => {
     return mergeTranslatedLyrics(baseLines, rawTrans);
   }, [baseLines, lyrics?.translatedLyrics, translatedCache]);
 
+  const jamCode = useJamStore((s) => s.code);
+  const [isKaraokeMode, setIsKaraokeMode] = useState(true);
+  const [showResultModal, setShowResultModal] = useState(false);
+  const [resultSummary, setResultSummary] = useState<KaraokeScoreSummary | null>(null);
+
+  const time = currentTime + offset;
+
+  const scorer = useKaraokeScorer({
+    songId: currentSong.id,
+    lines,
+    currentTime: time,
+    isPlaying,
+    duration,
+    onFinish: (summary) => {
+      setResultSummary(summary);
+      setShowResultModal(true);
+      if (jamCode) {
+        useJamStore.getState().submitKaraokeScore({
+          songId: currentSong.id,
+          totalScore: summary.totalScore,
+          rank: summary.rank,
+          perfectCount: summary.perfectCount,
+          goodCount: summary.goodCount,
+          missCount: summary.missCount,
+          maxCombo: summary.maxCombo,
+          isLive: false,
+        });
+      }
+    },
+  });
+
+  // Tự động bật chế độ Chỉ cần Beat (tách giọng ca sĩ) khi mở màn hình Karaoke
+  useEffect(() => {
+    if (isKaraokeMode) {
+      scorer.toggleBeatMode(true);
+    } else {
+      scorer.toggleBeatMode(false);
+    }
+    return () => {
+      scorer.toggleBeatMode(false);
+    };
+  }, [isKaraokeMode, currentSong.id]);
+
+  // Tự động đồng bộ điểm số realtime lên phòng Jam khi đang hát
+  useEffect(() => {
+    if (jamCode && scorer.totalScore > 0 && scorer.isMicOn) {
+      useJamStore.getState().submitKaraokeScore({
+        songId: currentSong.id,
+        totalScore: scorer.totalScore,
+        rank: scorer.currentRank,
+        perfectCount: scorer.perfectCount,
+        goodCount: scorer.goodCount,
+        missCount: scorer.missCount,
+        maxCombo: scorer.maxCombo,
+        isLive: true,
+      });
+    }
+  }, [scorer.totalScore, jamCode, currentSong.id]);
   const lineEnd = (i: number) => Math.min(lines[i + 1]?.time ?? Infinity, lines[i].time + MAX_LINE_SECONDS);
 
   // Only the line index, break state and dot count re-render; the fill sweep is written straight to the DOM.
@@ -145,7 +206,10 @@ const KaraokeBody: React.FC = () => {
         : { activeIndex: index, inBreak: isBreak, breakDots: dots }
     );
     if (index >= 0 && !isBreak && fillRef.current) {
-      const progress = Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
+      const progress =
+        scorer.isMicOn && scorer.isVoicePacing
+          ? scorer.voiceProgressRef.current
+          : Math.min(1, Math.max(0, (time - lines[index].time) / Math.max(0.5, lineEnd(index) - lines[index].time)));
       fillRef.current.style.setProperty('--p', `${(progress * 100).toFixed(2)}%`);
     }
   });
@@ -273,6 +337,34 @@ const KaraokeBody: React.FC = () => {
         </div>
       )}
 
+      {/* Karaoke Pitch Visualizer HUD */}
+      {isKaraokeMode && lines.length > 0 && (
+        <div className="w-full px-6 max-w-3xl mx-auto pt-1 flex-shrink-0 z-20">
+          <KaraokePitchVisualizer
+            isMicOn={scorer.isMicOn}
+            onToggleMic={scorer.isMicOn ? scorer.stopMic : scorer.startMic}
+            livePitch={scorer.livePitch}
+            currentNote={scorer.currentNote}
+            lastVerdict={scorer.lastVerdict}
+            totalScore={scorer.totalScore}
+            combo={scorer.combo}
+            currentRank={scorer.currentRank}
+            activeLineMelody={activeIndex !== -1 ? scorer.lineMelodies[activeIndex] : null}
+            currentTime={time}
+            isBeatOnly={scorer.isBeatOnly}
+            onToggleBeatMode={() => scorer.toggleBeatMode()}
+            isVoicePacing={scorer.isVoicePacing}
+            onToggleVoicePacing={scorer.toggleVoicePacing}
+            sungWordIndex={scorer.sungWordIndex}
+          />
+          {scorer.micError && (
+            <p className="text-xs text-rose-400 text-center -mt-2 mb-2 bg-rose-500/10 border border-rose-500/20 rounded-xl p-2">
+              {scorer.micError}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Main lyrics scroll area */}
       <div
         ref={containerRef}
@@ -337,16 +429,63 @@ const KaraokeBody: React.FC = () => {
                       }${
                         isActive ? 'scale-100' : isPassed ? 'scale-95 opacity-60 hover:opacity-90' : 'scale-95 opacity-40 hover:opacity-80'
                       }`}
-                      style={{
-                        // Active line: --p is driven per frame by useSmoothClock.
-                        ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
-                        backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
-                        WebkitBackgroundClip: 'text',
-                        backgroundClip: 'text',
-                        color: 'transparent',
-                      } as React.CSSProperties}
+                      style={
+                        isActive && scorer.isMicOn && scorer.isVoicePacing
+                          ? undefined
+                          : ({
+                              // Active line: --p is driven per frame by useSmoothClock.
+                              ...(isActive ? {} : { '--p': isPassed ? '100%' : '0%' }),
+                              backgroundImage: 'linear-gradient(90deg, #ffffff var(--p, 0%), rgba(255,255,255,0.35) var(--p, 0%))',
+                              WebkitBackgroundClip: 'text',
+                              backgroundClip: 'text',
+                              color: 'transparent',
+                            } as React.CSSProperties)
+                      }
                     >
-                      <div>{line.text}</div>
+                      {isActive && scorer.isMicOn && scorer.isVoicePacing ? (
+                        <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                          {line.text
+                            .split(/\s+/)
+                            .filter(Boolean)
+                            .map((word, wIdx, arr) => {
+                              const totalW = Math.max(1, arr.length);
+                              const wordStart = wIdx / totalW;
+                              const wordEnd = (wIdx + 1) / totalW;
+                              const vp = scorer.voiceProgress;
+                              const wordFill =
+                                vp >= wordEnd
+                                  ? 100
+                                  : vp <= wordStart
+                                  ? 0
+                                  : ((vp - wordStart) / (wordEnd - wordStart)) * 100;
+                              const isCurrentWord =
+                                vp >= wordStart && vp < wordEnd && Boolean(scorer.livePitch?.isVoiced);
+                              return (
+                                <span
+                                  key={wIdx}
+                                  className={`inline-block transition-transform duration-100 ${
+                                    isCurrentWord
+                                      ? 'scale-105 drop-shadow-[0_0_12px_rgba(52,211,153,0.85)]'
+                                      : ''
+                                  }`}
+                                  style={{
+                                    backgroundImage: `linear-gradient(90deg, #34d399 ${wordFill.toFixed(
+                                      1
+                                    )}%, rgba(255,255,255,0.32) ${wordFill.toFixed(1)}%)`,
+                                    WebkitBackgroundClip: 'text',
+                                    backgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    color: 'transparent',
+                                  }}
+                                >
+                                  {word}
+                                </span>
+                              );
+                            })}
+                        </div>
+                      ) : (
+                        <div>{line.text}</div>
+                      )}
                       {/* Parallel translated Vietnamese line */}
                       {showTranslation && (
                         <div
@@ -463,9 +602,77 @@ const KaraokeBody: React.FC = () => {
           >
             {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
           </button>
-          <span className="w-[120px]" />
+          <div className="flex items-center justify-end gap-2 min-w-[120px]">
+            {lines.length > 0 && (
+              <button
+                onClick={() => setIsKaraokeMode((v) => !v)}
+                aria-label={isKaraokeMode ? 'Tắt chấm điểm' : 'Bật chấm điểm'}
+                className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  isKaraokeMode
+                    ? 'bg-emerald-400 text-black border-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.4)]'
+                    : 'border-white/20 text-white/70 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                <Mic className="w-3.5 h-3.5" />
+                <span>{isKaraokeMode ? 'Karaoke Bật' : 'Hát Karaoke'}</span>
+              </button>
+            )}
+
+            {isKaraokeMode && scorer.totalScore > 0 && (
+              <button
+                onClick={() => {
+                  scorer.finishSession();
+                  setShowResultModal(true);
+                }}
+                title="Xem kết quả điểm"
+                className="p-2 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-300 hover:bg-amber-400/30 transition-colors"
+              >
+                <Trophy className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      <KaraokeResultModal
+        isOpen={showResultModal}
+        onClose={() => setShowResultModal(false)}
+        summary={
+          resultSummary || {
+            songId: currentSong.id,
+            totalScore: scorer.totalScore,
+            rank: scorer.currentRank,
+            perfectCount: scorer.perfectCount,
+            goodCount: scorer.goodCount,
+            missCount: scorer.missCount,
+            maxCombo: scorer.maxCombo,
+            completedAt: new Date(),
+          }
+        }
+        onRestart={() => {
+          scorer.resetScore();
+          seek(0);
+          setShowResultModal(false);
+        }}
+        onShareToJam={
+          jamCode
+            ? () => {
+                useJamStore.getState().submitKaraokeScore({
+                  songId: currentSong.id,
+                  totalScore: scorer.totalScore,
+                  rank: scorer.currentRank,
+                  perfectCount: scorer.perfectCount,
+                  goodCount: scorer.goodCount,
+                  missCount: scorer.missCount,
+                  maxCombo: scorer.maxCombo,
+                  isLive: false,
+                });
+                setShowResultModal(false);
+              }
+            : undefined
+        }
+        isInJam={!!jamCode}
+      />
 
       {/* AI Storytelling Modal / Bottom Sheet */}
       <AnimatePresence>

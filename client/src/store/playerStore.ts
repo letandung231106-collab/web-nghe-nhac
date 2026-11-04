@@ -391,9 +391,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         get().initAudio();
         audio = getAudioElement()!;
       }
-      // Always request CORS for EQ sources, even on an already-wired element: one attached while playing a
-      // same-origin file has no crossorigin, and would output silence for a cross-origin (Supabase) file.
-      if (useEq) audio.crossOrigin = 'anonymous';
+      // Always request CORS for processable sources (same-origin / Supabase), so EQ or Karaoke Beat Mode can attach anytime.
+      if (canProcessSource(url)) audio.crossOrigin = 'anonymous';
       else if (!isAttached(audio)) audio.removeAttribute('crossorigin');
       audio.src = url;
       if (useEq) {
