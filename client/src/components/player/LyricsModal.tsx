@@ -567,7 +567,6 @@ const KaraokeBody: React.FC = () => {
         </div>
       </div>
 
-<<<<<<< HEAD
       <KaraokeResultModal
         isOpen={showResultModal}
         onClose={() => setShowResultModal(false)}
@@ -607,7 +606,7 @@ const KaraokeBody: React.FC = () => {
         }
         isInJam={!!jamCode}
       />
-=======
+
       {/* AI Storytelling Modal / Bottom Sheet */}
       <AnimatePresence>
         {selectedStoryLine && (
@@ -730,7 +729,6 @@ const KaraokeBody: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
->>>>>>> upstream/main
     </>
   );
 };
