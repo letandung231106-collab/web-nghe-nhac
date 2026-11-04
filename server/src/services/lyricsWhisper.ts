@@ -13,7 +13,7 @@ export interface TimedLine { time: number; text: string }
 
 export const whisperAvailable = () => !!process.env.GROQ_API_KEY?.trim();
 
-export async function whisperTranscribe(data: Buffer, mimeType: string) {
+export async function whisperTranscribe(data: Buffer, mimeType: string, language?: string) {
   if (data.length > MAX_BYTES) throw new Error('Tệp nhạc quá lớn cho Whisper (tối đa 25 MB).');
   const form = new FormData();
   form.append('file', new Blob([new Uint8Array(data)],{ type: mimeType }), 'audio.' + (mimeType.split('/')[1] || 'mp3'));
@@ -22,6 +22,7 @@ export async function whisperTranscribe(data: Buffer, mimeType: string) {
   form.append('timestamp_granularities[]', 'word');
   form.append('timestamp_granularities[]', 'segment');
   form.append('temperature', '0');
+  if (language) form.append('language', language);
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: { authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}` },

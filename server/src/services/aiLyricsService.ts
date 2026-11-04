@@ -74,8 +74,32 @@ export class AILyricsService {
     if (!apiKey) {
       throw new Error('Chưa cấu hình GEMINI_API_KEY trên máy chủ. Vui lòng kiểm tra file cấu hình .env.');
     }
-    const model = process.env.GEMINI_MODEL?.trim() || 'gemini-1.5-flash';
+    const model = process.env.GEMINI_MODEL?.trim() || 'gemini-flash-lite-latest'; // gemini-1.5-flash was retired (HTTP 404); lite answers in ~1s
     return { apiKey, model };
+  }
+
+  /** POSTs to Gemini; on overload/retired model retries once, then tries lighter flash models. */
+  private static async callGemini(model: string, apiKey: string, body: string, timeoutMs: number) {
+    // A hung model counts like an overloaded one (504) so the next model gets a turn.
+    const call = (m: string, ms: number) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(ms),
+        body,
+      }).catch(() => new Response(null, { status: 504 }));
+    const retryable = (s: number) => [404, 429, 500, 503, 504].includes(s);
+    let response = await call(model, timeoutMs);
+    if ([429, 503].includes(response.status)) {
+      await new Promise((r) => setTimeout(r, 1200));
+      response = await call(model, timeoutMs);
+    }
+    for (const m of ['gemini-flash-lite-latest', 'gemini-flash-latest']) {
+      if (!retryable(response.status) || m === model) continue;
+      response = await call(m, timeoutMs);
+    }
+    if (response.status === 504) throw new Error('AI phản hồi quá lâu. Vui lòng thử lại sau.');
+    return response;
   }
 
   /**
@@ -91,7 +115,6 @@ export class AILyricsService {
     }
 
     const { apiKey, model } = this.getGeminiConfig();
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
     const systemInstruction = `You are an expert bilingual music lyricist and literary translator specializing in song translations to Vietnamese.
 Your task is to translate time-synced song lyrics into natural, emotionally resonant, and poetic Vietnamese suitable for singing and subtitles.
@@ -109,14 +132,7 @@ ${JSON.stringify(lines.map((l, idx) => ({ index: idx, time: l.time, text: l.text
 
 Translate all lines into Vietnamese and return {"lines": [{"time": number, "text": string, "translation": string}]}.`;
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      signal: AbortSignal.timeout(35000),
-      body: JSON.stringify({
+    const response = await this.callGemini(model, apiKey, JSON.stringify({
         systemInstruction: { parts: [{ text: systemInstruction }] },
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         generationConfig: {
@@ -124,8 +140,7 @@ Translate all lines into Vietnamese and return {"lines": [{"time": number, "text
           maxOutputTokens: 8192,
           responseMimeType: 'application/json',
         },
-      }),
-    });
+      }), 35000);
 
     if (!response.ok) {
       throw new Error(`Gemini API trả về lỗi HTTP ${response.status}. Vui lòng thử lại sau.`);
@@ -183,7 +198,6 @@ Translate all lines into Vietnamese and return {"lines": [{"time": number, "text
     }
 
     const { apiKey, model } = this.getGeminiConfig();
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
     const systemInstruction = `Bạn là một nhà phê bình âm nhạc và chuyên gia phân tích ca từ tài hoa, am hiểu sâu sắc về nghệ thuật sáng tác và thi ca.
 Nhiệm vụ của bạn là giải thích ý nghĩa, bối cảnh và cảm xúc của một câu hát cụ thể trong một bài hát.
@@ -205,14 +219,7 @@ ${contextLyrics || '(Không có thêm ngữ cảnh)'}
 
 Hãy giải thích ý nghĩa, bối cảnh và cảm xúc của câu hát "${trimmedLine}".`;
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({
+    const response = await this.callGemini(model, apiKey, JSON.stringify({
         systemInstruction: { parts: [{ text: systemInstruction }] },
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         generationConfig: {
@@ -220,8 +227,7 @@ Hãy giải thích ý nghĩa, bối cảnh và cảm xúc của câu hát "${tri
           maxOutputTokens: 2048,
           responseMimeType: 'application/json',
         },
-      }),
-    });
+      }), 25000);
 
     if (!response.ok) {
       throw new Error(`Gemini API trả về lỗi HTTP ${response.status}. Vui lòng thử lại sau.`);
